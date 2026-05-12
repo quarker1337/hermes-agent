@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.nousresearch.com/plugin-registry/schema.json",
+  "title": "Hermes Agent Plugin Registry",
+  "description": "Static registry/tap format for community Hermes Agent plugins.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "plugins"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "updated_at": {
+      "type": "string",
+      "description": "Optional ISO-8601 timestamp for the registry document."
+    },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/plugin"
+      },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "plugin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description",
+        "maintainer",
+        "tags"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "pip_name"
+          ]
+        },
+        {
+          "required": [
+            "git_url"
+          ]
+        },
+        {
+          "required": [
+            "tarball_url"
+          ]
+        }
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "maintainer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "uniqueItems": true
+        },
+        "pip_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "git_url": {
+          "type": "string",
+          "pattern": "^(https://|ssh://|git@).+"
+        },
+        "tarball_url": {
+          "type": "string",
+          "pattern": "^https://.+"
+        },
+        "homepage": {
+          "type": "string",
+          "pattern": "^https://.+"
+        },
+        "source_url": {
+          "type": "string",
+          "pattern": "^https://.+"
+        },
+        "license": {
+          "type": "string",
+          "maxLength": 100
+        }
+      }
+    }
+  }
+}

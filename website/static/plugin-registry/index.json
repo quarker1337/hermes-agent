@@ -1,0 +1,5 @@
+{
+  "$schema": "https://hermes-agent.nousresearch.com/plugin-registry/schema.json",
+  "version": 1,
+  "plugins": []
+}

@@ -1022,6 +1022,28 @@ pip install hermes-plugin-calculator
 # Plugin auto-discovered on next hermes startup
 ```
 
+### Community registry metadata
+
+Hermes also publishes a dependency-free registry/tap JSON shape for future `hermes plug search` / `hermes plug add <name>` workflows. The schema is served from:
+
+```text
+https://hermes-agent.nousresearch.com/plugin-registry/schema.json
+```
+
+A curated registry entry looks like:
+
+```json
+{
+  "name": "hermes-jira",
+  "description": "Jira issue integration for Hermes Agent.",
+  "maintainer": "Your name or org",
+  "tags": ["issues", "jira"],
+  "pip_name": "hermes-jira"
+}
+```
+
+Use exactly one install source: `pip_name`, `git_url`, or `tarball_url`. The initial official registry can be empty; third-party taps can host the same JSON shape and point Hermes at their own `index.json` later.
+
 ## Distribute for NixOS
 
 NixOS users can install your plugin declaratively if you provide a `pyproject.toml` with entry points:
