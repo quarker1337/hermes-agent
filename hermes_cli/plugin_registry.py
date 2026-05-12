@@ -137,10 +137,18 @@ def _require_mapping(value: Any, path: str) -> Mapping[str, Any]:
     return value
 
 
-def _require_string(value: Any, path: str, *, pattern: re.Pattern[str] | None = None) -> str:
+def _require_string(
+    value: Any,
+    path: str,
+    *,
+    pattern: re.Pattern[str] | None = None,
+    max_length: int | None = None,
+) -> str:
     if not isinstance(value, str) or not value.strip():
         _fail(path, "must be a non-empty string")
     text = value.strip()
+    if max_length is not None and len(text) > max_length:
+        _fail(path, f"must be at most {max_length} characters")
     if pattern is not None and not pattern.fullmatch(text):
         _fail(path, f"invalid value: {text!r}")
     return text
@@ -174,7 +182,10 @@ def _validate_tier(value: Any, path: str, install_field: str) -> str:
 
 
 def _validate_install_source(plugin: Mapping[str, Any], path: str) -> dict[str, str]:
-    present = [field for field in INSTALL_SOURCE_FIELDS if plugin.get(field)]
+    # Count presence, not truthiness, to mirror the public JSON Schema oneOf:
+    # a second source with an empty value is still an ambiguous second source,
+    # not an absent field.
+    present = [field for field in INSTALL_SOURCE_FIELDS if field in plugin]
     if len(present) != 1:
         _fail(
             path,
@@ -205,8 +216,8 @@ def _validate_plugin_entry(raw_plugin: Any, path: str) -> dict[str, Any]:
     normalized: dict[str, Any] = {
         "name": _require_string(plugin.get("name"), f"{path}.name", pattern=_IDENTIFIER_RE),
         "tier": _validate_tier(plugin.get("tier"), f"{path}.tier", install_field),
-        "description": _require_string(plugin.get("description"), f"{path}.description"),
-        "maintainer": _require_string(plugin.get("maintainer"), f"{path}.maintainer"),
+        "description": _require_string(plugin.get("description"), f"{path}.description", max_length=500),
+        "maintainer": _require_string(plugin.get("maintainer"), f"{path}.maintainer", max_length=200),
         "tags": _validate_tags(plugin.get("tags"), f"{path}.tags"),
     }
     normalized.update(install_source)
@@ -222,7 +233,7 @@ def _validate_plugin_entry(raw_plugin: Any, path: str) -> dict[str, Any]:
                 plugin[optional_url], f"{path}.{optional_url}", pattern=_HTTPS_URL_RE
             )
     if plugin.get("license"):
-        normalized["license"] = _require_string(plugin["license"], f"{path}.license")
+        normalized["license"] = _require_string(plugin["license"], f"{path}.license", max_length=100)
     return normalized
 
 

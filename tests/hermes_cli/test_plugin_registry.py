@@ -85,6 +85,7 @@ def test_validate_registry_document_accepts_core_and_extra_entries():
         {},
         {"pip_name": "hermes-jira", "git_url": "https://github.com/example/hermes-jira.git"},
         {"pip_name": "hermes-jira", "tarball_url": "https://example.com/hermes-jira.tar.gz"},
+        {"pip_name": "hermes-jira", "git_url": ""},
     ],
 )
 def test_validate_registry_document_requires_exactly_one_install_source(source_patch):
@@ -123,6 +124,15 @@ def test_validate_registry_document_rejects_bad_plugin_name_and_tags():
     doc["plugins"][0]["tags"] = ["jira", "bad tag with spaces"]
 
     with pytest.raises(PluginRegistryValidationError, match="name"):
+        validate_registry_document(doc)
+
+
+def test_validate_registry_document_enforces_schema_string_lengths():
+    """Runtime validation should reject taps the published schema rejects."""
+    doc = _valid_registry()
+    doc["plugins"][0]["description"] = "x" * 501
+
+    with pytest.raises(PluginRegistryValidationError, match="at most 500"):
         validate_registry_document(doc)
 
 

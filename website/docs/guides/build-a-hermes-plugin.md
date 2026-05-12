@@ -1024,13 +1024,13 @@ pip install hermes-plugin-calculator
 
 ### Community registry metadata
 
-Hermes also publishes a dependency-free registry/tap JSON shape for future `hermes plug search` / `hermes plug add <name>` workflows. The schema is served from:
+Hermes publishes a dependency-free registry/tap JSON shape for `hermes plugins search`, `hermes plugins tap add <url-or-path>`, and `hermes plugins install <name>` workflows. The schema is served from:
 
 ```text
 https://hermes-agent.nousresearch.com/plugin-registry/schema.json
 ```
 
-A curated registry entry looks like:
+A community registry entry looks like:
 
 ```json
 {
@@ -1042,7 +1042,7 @@ A curated registry entry looks like:
 }
 ```
 
-Use exactly one install source: `pip_name`, `git_url`, or `tarball_url`. The initial official registry can be empty; third-party taps can host the same JSON shape and point Hermes at their own `index.json` later.
+Use exactly one install source: `bundled_key` for bundled/core plugins, `extra_name` for official Hermes extras, `pip_name` for Python packages, `git_url` for Git repositories, or `tarball_url` for HTTPS tarballs/wheels. Third-party taps can host the same JSON shape and point Hermes at their own `index.json` with `hermes plugins tap add`.
 
 ## Distribute for NixOS
 
