@@ -103,10 +103,81 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
     }
 
 
+def setup_slack_cli_parser(slack_parser) -> None:
+    """Configure the ``hermes slack`` argparse tree.
+
+    Bundled Slack plugin registration calls this via
+    ``PluginContext.register_cli_command`` so Slack's helper CLI can live with
+    the Slack plugin instead of the core ``main.py`` parser.
+    """
+    slack_sub = slack_parser.add_subparsers(dest="slack_command")
+    slack_manifest = slack_sub.add_parser(
+        "manifest",
+        help="Print or write a Slack app manifest with every gateway command "
+        "registered as a native slash (/btw, /stop, /model, ...)",
+        description=(
+            "Generate a Slack app manifest that registers every gateway "
+            "command in COMMAND_REGISTRY as a first-class Slack slash "
+            "command (matching Discord and Telegram parity). Paste the "
+            "output into Slack app config → Features → App Manifest → "
+            "Edit, then Save. Reinstall the app if Slack prompts for it."
+        ),
+    )
+    slack_manifest.add_argument(
+        "--write",
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="PATH",
+        help="Write manifest to a file instead of stdout. With no PATH "
+        "writes to $HERMES_HOME/slack-manifest.json.",
+    )
+    slack_manifest.add_argument(
+        "--name",
+        default=None,
+        help='Bot display name (default: "Hermes")',
+    )
+    slack_manifest.add_argument(
+        "--description",
+        default=None,
+        help="Bot description shown in Slack's app directory.",
+    )
+    slack_manifest.add_argument(
+        "--slashes-only",
+        action="store_true",
+        help="Emit only the features.slash_commands array (for merging "
+        "into an existing manifest manually).",
+    )
+    slack_parser.set_defaults(func=slack_command)
+
+
+def slack_command(args) -> int:
+    """Dispatch ``hermes slack <subcommand>``."""
+    sub = getattr(args, "slack_command", None)
+    if sub in {None, ""}:
+        print(
+            "usage: hermes slack <subcommand>\n"
+            "\n"
+            "subcommands:\n"
+            "  manifest   Generate a Slack app manifest with every gateway\n"
+            "             command registered as a native slash\n"
+            "\n"
+            "Run `hermes slack manifest -h` for details.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if sub == "manifest":
+        return slack_manifest_command(args)
+
+    print(f"Unknown slack subcommand: {sub}", file=sys.stderr)
+    return 1
+
+
 def slack_manifest_command(args) -> int:
     """Print or write a Slack app manifest JSON.
 
-    Flags (all parsed in ``hermes_cli/main.py``):
+    Flags (all parsed by ``setup_slack_cli_parser``):
       --write [PATH]  Write to file instead of stdout (default path:
                       ``$HERMES_HOME/slack-manifest.json``)
       --name NAME     Override the bot display name (default: "Hermes")

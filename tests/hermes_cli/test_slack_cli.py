@@ -1,5 +1,7 @@
 """Tests for Slack CLI helpers."""
 
+import argparse
+
 from hermes_cli.slack_cli import _build_full_manifest
 
 
@@ -28,3 +30,19 @@ class TestSlackFullManifest:
         assert "assistant:write" in manifest["oauth_config"]["scopes"]["bot"]
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
         assert "assistant_thread_started" in bot_events
+
+
+class TestSlackPluginCliParser:
+    """Slack's top-level CLI is owned by the bundled Slack plugin."""
+
+    def test_setup_slack_cli_parser_wires_manifest_subcommand(self):
+        from hermes_cli.slack_cli import setup_slack_cli_parser, slack_command
+
+        parser = argparse.ArgumentParser(prog="hermes slack")
+        setup_slack_cli_parser(parser)
+
+        args = parser.parse_args(["manifest", "--slashes-only"])
+
+        assert args.slack_command == "manifest"
+        assert args.slashes_only is True
+        assert args.func is slack_command

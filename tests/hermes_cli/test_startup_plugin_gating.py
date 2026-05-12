@@ -133,6 +133,7 @@ def test_discovery_skipped_for_builtins(argv):
     [
         ["hermes", "meet", "join"],          # potential google_meet plugin
         ["hermes", "honcho", "status"],      # potential memory plugin
+        ["hermes", "slack", "manifest"],     # bundled Slack plugin CLI
         ["hermes", "unknown-subcmd"],
     ],
 )
