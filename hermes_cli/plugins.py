@@ -230,6 +230,51 @@ def _get_enabled_plugins() -> Optional[set]:
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 
 
+def _normalize_requires_extra(value: Any) -> List[str]:
+    """Normalize plugin manifest ``requires_extra`` metadata.
+
+    Manifests use the singular key because a bundled plugin usually maps to a
+    single pyproject extra (for example ``requires_extra: slack``). Accept a
+    list as a small future-proofing convenience for plugins that need multiple
+    extras.
+    """
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, (list, tuple, set)):
+        result: List[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                result.append(item.strip())
+        return result
+    return []
+
+
+def _format_requires_extra_hint(extras: List[str]) -> str:
+    """Return a reviewer/user-facing install hint for optional plugin extras."""
+    clean = [extra for extra in extras if extra]
+    if not clean:
+        return ""
+    joined = ",".join(clean)
+    noun = "extra" if len(clean) == 1 else "extras"
+    names = ", ".join(clean)
+    return (
+        f"plugin declares optional {noun}: {names}; "
+        f"install with: pip install 'hermes-agent[{joined}]'"
+    )
+
+
+def _format_plugin_load_error(manifest: "PluginManifest", exc: Exception) -> str:
+    """Preserve the original plugin load error and append extra install help."""
+    base = str(exc)
+    if manifest.requires_extra and isinstance(exc, (ImportError, ModuleNotFoundError)):
+        hint = _format_requires_extra_hint(manifest.requires_extra)
+        if hint:
+            return f"{base} ({hint})"
+    return base
+
+
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
@@ -239,6 +284,7 @@ class PluginManifest:
     description: str = ""
     author: str = ""
     requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
+    requires_extra: List[str] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
     source: str = ""        # "user", "project", or "entrypoint"
@@ -1019,6 +1065,9 @@ class PluginManager:
                 description=data.get("description", ""),
                 author=data.get("author", ""),
                 requires_env=data.get("requires_env", []),
+                requires_extra=_normalize_requires_extra(
+                    data.get("requires_extra", data.get("requires_extras"))
+                ),
                 provides_tools=data.get("provides_tools", []),
                 provides_hooks=data.get("provides_hooks", []),
                 source=source,
@@ -1127,10 +1176,10 @@ class PluginManager:
                 )
 
         except Exception as exc:
-            loaded.error = str(exc)
+            loaded.error = _format_plugin_load_error(manifest, exc)
             logger.warning(
                 "Failed to load plugin '%s': %s",
-                manifest.name, exc, exc_info=_PLUGINS_DEBUG,
+                manifest.name, loaded.error, exc_info=_PLUGINS_DEBUG,
             )
 
         self._plugins[manifest.key or manifest.name] = loaded
@@ -1246,6 +1295,7 @@ class PluginManager:
                     "kind": loaded.manifest.kind,
                     "version": loaded.manifest.version,
                     "description": loaded.manifest.description,
+                    "requires_extra": list(loaded.manifest.requires_extra),
                     "source": loaded.manifest.source,
                     "enabled": loaded.enabled,
                     "tools": len(loaded.tools_registered),

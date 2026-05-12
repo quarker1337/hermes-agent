@@ -72,7 +72,10 @@ requires_env:          # gate loading on env vars; prompted during install
     description: "Key for the Other service"
     url: "https://other.com/keys"
     secret: true
+requires_extra: slack  # optional pyproject extra hint for missing imports
 ```
+
+`requires_extra` is metadata for plugins that depend on Hermes optional dependencies. If an enabled plugin fails to import because that extra is missing, Hermes keeps the original import error and appends the exact install hint, e.g. `pip install 'hermes-agent[slack]'`. Use a list if a plugin needs multiple extras.
 
 ## Step 3: Write the tool schemas
 

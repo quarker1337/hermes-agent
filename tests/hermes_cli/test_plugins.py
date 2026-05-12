@@ -193,6 +193,51 @@ class TestPluginDiscovery:
 class TestPluginLoading:
     """Tests for plugin module loading."""
 
+    def test_parse_manifest_records_requires_extra(self, tmp_path, monkeypatch):
+        """plugin.yaml can declare the pyproject extra needed to install deps."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "slack_bundle",
+            manifest_extra={"requires_extra": "slack"},
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        entry = mgr._plugins["slack_bundle"]
+        assert entry.manifest.requires_extra == ["slack"]
+        listed = {plugin["key"]: plugin for plugin in mgr.list_plugins()}
+        assert listed["slack_bundle"]["requires_extra"] == ["slack"]
+
+    def test_requires_extra_import_error_mentions_install_hint(self, tmp_path, monkeypatch):
+        """Missing optional-extra imports should point at the exact pip extra."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "needs_slack"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.dump({"name": "needs_slack", "requires_extra": "slack"})
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "import definitely_missing_slack_dependency\n"
+            "def register(ctx):\n"
+            "    pass\n"
+        )
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["needs_slack"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        entry = mgr._plugins["needs_slack"]
+        assert not entry.enabled
+        assert "pip install 'hermes-agent[slack]'" in (entry.error or "")
+        assert "definitely_missing_slack_dependency" in (entry.error or "")
+
     def test_load_missing_init(self, tmp_path, monkeypatch):
         """Plugin dir without __init__.py records an error."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
