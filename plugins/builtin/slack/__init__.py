@@ -82,7 +82,7 @@ def register(ctx) -> None:
         allow_all_env="SLACK_ALLOW_ALL_USERS",
         max_message_length=SlackAdapter.MAX_MESSAGE_LENGTH,
         emoji="💼",
-        pii_safe=True,
+        pii_safe=False,
         allow_update_command=True,
         platform_hint=(
             "You are chatting via Slack. Use concise Slack-friendly Markdown; "

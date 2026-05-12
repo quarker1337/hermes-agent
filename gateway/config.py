@@ -1256,7 +1256,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.SLACK].enabled = True
         else:
             slack_config = config.platforms[Platform.SLACK]
-            enabled_was_explicit = bool(slack_config.extra.pop("_enabled_explicit", False))
+            enabled_was_explicit = bool(slack_config.extra.get("_enabled_explicit", False))
             if not slack_config.enabled and not enabled_was_explicit:
                 # Top-level Slack settings such as channel prompts should not
                 # turn an env-token setup into a disabled platform. Only an
@@ -1770,9 +1770,20 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 logger.debug("check_fn for %s raised: %s", entry.name, e)
                 continue
             platform = Platform(entry.name)
-            if platform not in config.platforms:
-                config.platforms[platform] = PlatformConfig()
-            config.platforms[platform].enabled = True
+            platform_config = config.platforms.get(platform)
+            if platform_config is not None:
+                enabled_was_explicit = bool(platform_config.extra.get("_enabled_explicit", False))
+                if not platform_config.enabled and enabled_was_explicit:
+                    platform_config.extra.pop("_enabled_explicit", None)
+                    continue
+            if platform_config is None:
+                platform_config = PlatformConfig()
+                config.platforms[platform] = platform_config
+            if entry.validate_config is not None and not entry.validate_config(platform_config):
+                platform_config.extra.pop("_enabled_explicit", None)
+                continue
+            platform_config.enabled = True
+            platform_config.extra.pop("_enabled_explicit", None)
             # Seed extras from env if the plugin opted in.
             if entry.env_enablement_fn is not None:
                 try:
@@ -1787,9 +1798,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     # up as a proper HomeChannel dataclass.  Everything else is
                     # merged into ``extra``.
                     home = seed.pop("home_channel", None)
-                    config.platforms[platform].extra.update(seed)
+                    platform_config.extra.update(seed)
                     if isinstance(home, dict) and home.get("chat_id"):
-                        config.platforms[platform].home_channel = HomeChannel(
+                        platform_config.home_channel = HomeChannel(
                             platform=platform,
                             chat_id=str(home["chat_id"]),
                             name=str(home.get("name") or "Home"),

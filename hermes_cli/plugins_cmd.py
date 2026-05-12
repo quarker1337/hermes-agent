@@ -20,6 +20,15 @@ from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
+from hermes_cli.plugin_registry import (
+    INSTALL_SOURCE_FIELDS,
+    add_configured_registry_url,
+    find_registry_plugin,
+    get_configured_registry_urls,
+    load_registry_document,
+    remove_configured_registry_url,
+    search_registry_plugins,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +162,14 @@ def _repo_name_from_url(url: str) -> str:
     if ":" in name:
         name = name.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
     return name
+
+
+def _direct_git_identifier(identifier: str) -> bool:
+    """Return True when *identifier* should bypass registry lookup."""
+    text = identifier.strip()
+    if text.startswith(("https://", "http://", "git@", "ssh://", "file://")):
+        return True
+    return len(text.strip("/").split("/")) == 2
 
 
 def _read_manifest(plugin_dir: Path) -> dict:
@@ -435,61 +452,200 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
     return target, installed_manifest, installed_name
 
 
+def _registry_install_source(entry: dict[str, Any]) -> tuple[str, str]:
+    """Return ``(field, value)`` for a validated registry entry."""
+    for field in INSTALL_SOURCE_FIELDS:
+        value = entry.get(field)
+        if value:
+            return field, str(value)
+    raise PluginOperationError(
+        f"Registry entry '{entry.get('name', '<unknown>')}' has no install source."
+    )
+
+
+def _activation_name_for_registry_entry(entry: dict[str, Any], installed_name: str | None = None) -> str:
+    """Return the plugin key/name to write into ``plugins.enabled``."""
+    return str(entry.get("plugin_key") or installed_name or entry.get("name") or "").strip()
+
+
+def _run_pip_install(requirement: str) -> None:
+    """Install a pip requirement into the current Hermes Python environment."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", requirement],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PluginOperationError(
+            f"pip install timed out while installing {requirement!r}.",
+        ) from exc
+    except OSError as exc:
+        raise PluginOperationError(
+            f"Could not run pip to install {requirement!r}: {exc}",
+        ) from exc
+
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        raise PluginOperationError(f"pip install failed for {requirement!r}:\n{err}")
+
+
+def _install_registry_entry(entry: dict[str, Any], *, force: bool) -> tuple[Path | None, dict, str, str]:
+    """Install a plugin from a registry entry.
+
+    Returns ``(target_dir_or_none, manifest_like, activation_name, source_field)``.
+    """
+    source_field, source_value = _registry_install_source(entry)
+    registry_name = str(entry["name"])
+
+    if source_field == "git_url":
+        target, installed_manifest, installed_name = _install_plugin_core(source_value, force=force)
+        return target, installed_manifest, _activation_name_for_registry_entry(entry, installed_name), source_field
+
+    if source_field == "bundled_key":
+        activation = _activation_name_for_registry_entry(entry, source_value)
+        if not _plugin_exists(source_value) and not _plugin_exists(activation) and not _plugin_exists(registry_name):
+            raise PluginOperationError(
+                f"Registry entry '{registry_name}' points at bundled plugin "
+                f"'{source_value}', but this Hermes install does not contain it. "
+                "Run `hermes update` and try again."
+            )
+        return None, {"name": registry_name, "description": entry.get("description", "")}, activation, source_field
+
+    if source_field == "extra_name":
+        _run_pip_install(f"hermes-agent[{source_value}]")
+        return (
+            None,
+            {"name": registry_name, "description": entry.get("description", "")},
+            _activation_name_for_registry_entry(entry, registry_name),
+            source_field,
+        )
+
+    if source_field == "pip_name":
+        _run_pip_install(source_value)
+        return (
+            None,
+            {"name": registry_name, "description": entry.get("description", "")},
+            _activation_name_for_registry_entry(entry, registry_name),
+            source_field,
+        )
+
+    if source_field == "tarball_url":
+        _run_pip_install(source_value)
+        return (
+            None,
+            {"name": registry_name, "description": entry.get("description", "")},
+            _activation_name_for_registry_entry(entry, registry_name),
+            source_field,
+        )
+
+    raise PluginOperationError(f"Unsupported registry install source: {source_field}")
+
+
+def _set_plugin_enabled_state(name: str, *, enabled: bool) -> None:
+    """Persist plugin enabled/disabled state without requiring discovery."""
+    if not name:
+        return
+    enabled_set = _get_enabled_set()
+    disabled_set = _get_disabled_set()
+    if enabled:
+        enabled_set.add(name)
+        disabled_set.discard(name)
+    else:
+        enabled_set.discard(name)
+        disabled_set.add(name)
+    _save_enabled_set(enabled_set)
+    _save_disabled_set(disabled_set)
+
+
+def _registry_entry_for_identifier(identifier: str) -> tuple[dict[str, Any] | None, list[str]]:
+    """Resolve a non-Git install identifier against configured registries."""
+    if _direct_git_identifier(identifier):
+        return None, []
+    return find_registry_plugin(identifier)
+
+
 def cmd_install(
     identifier: str,
     force: bool = False,
     enable: Optional[bool] = None,
 ) -> None:
-    """Install a plugin from a Git URL or owner/repo shorthand.
+    """Install a plugin from registry name, Git URL, or owner/repo shorthand.
 
-    After install, prompt "Enable now? [y/N]" unless *enable* is provided
-    (True = auto-enable without prompting, False = install disabled).
+    Registry entries can point at bundled/core plugins, Hermes extras, pip
+    packages, Git repositories, or HTTPS tarballs. After install, prompt
+    "Enable now? [y/N]" unless *enable* is provided.
     """
     from rich.console import Console
 
     console = Console()
+    registry_entry, registry_errors = _registry_entry_for_identifier(identifier)
 
     try:
-        git_url = _resolve_git_url(identifier)
-    except ValueError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        sys.exit(1)
+        if registry_entry:
+            source_field, source_value = _registry_install_source(registry_entry)
+            console.print(
+                f"[dim]Installing {registry_entry['name']} from registry "
+                f"({source_field}: {source_value})...[/dim]"
+            )
+            target, installed_manifest, activation_name, source_field = _install_registry_entry(
+                registry_entry,
+                force=force,
+            )
+            installed_name = str(installed_manifest.get("name") or activation_name)
+        else:
+            try:
+                git_url = _resolve_git_url(identifier)
+            except ValueError as e:
+                extra = ""
+                if registry_errors:
+                    extra = "\nRegistry lookup also failed:\n  " + "\n  ".join(registry_errors)
+                console.print(f"[red]Error:[/red] {e}{extra}")
+                sys.exit(1)
 
-    if git_url.startswith(("http://", "file://")):
-        console.print(
-            "[yellow]Warning:[/yellow] Using insecure/local URL scheme. "
-            "Consider using https:// or git@ for production installs.",
-        )
+            if git_url.startswith(("http://", "file://")):
+                console.print(
+                    "[yellow]Warning:[/yellow] Using insecure/local URL scheme. "
+                    "Consider using https:// or git@ for production installs.",
+                )
 
-    console.print(f"[dim]Cloning {git_url}...[/dim]")
-
-    try:
-        target, installed_manifest, installed_name = _install_plugin_core(
-            identifier,
-            force=force,
-        )
+            console.print(f"[dim]Cloning {git_url}...[/dim]")
+            target, installed_manifest, installed_name = _install_plugin_core(
+                identifier,
+                force=force,
+            )
+            activation_name = installed_name
+            source_field = "git_url"
     except PluginOperationError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
-    if not (target / "plugin.yaml").exists() and not (target / "plugin.yml").exists() and not (
-        target / "__init__.py"
-    ).exists():
+    if target is not None:
+        if not (target / "plugin.yaml").exists() and not (target / "plugin.yml").exists() and not (
+            target / "__init__.py"
+        ).exists():
+            console.print(
+                f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml "
+                f"or __init__.py. It may not be a valid Hermes plugin.",
+            )
+
+        _prompt_plugin_env_vars(installed_manifest, console)
+        _display_after_install(target, identifier)
+    elif source_field in {"pip_name", "tarball_url", "extra_name"}:
         console.print(
-            f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml "
-            f"or __init__.py. It may not be a valid Hermes plugin.",
+            "[green]✓[/green] Python package installed. Restart Hermes so entry-point "
+            "plugins are rediscovered."
         )
-
-    _prompt_plugin_env_vars(installed_manifest, console)
-
-    _display_after_install(target, identifier)
+    elif source_field == "bundled_key":
+        console.print("[green]✓[/green] Bundled plugin is already present in this Hermes install.")
 
     should_enable = enable
     if should_enable is None:
         if sys.stdin.isatty() and sys.stdout.isatty():
             try:
                 answer = input(
-                    f"  Enable '{installed_name}' now? [y/N]: ",
+                    f"  Enable '{activation_name}' now? [y/N]: ",
                 ).strip().lower()
                 should_enable = answer in {"y", "yes"}
             except (EOFError, KeyboardInterrupt):
@@ -498,19 +654,14 @@ def cmd_install(
             should_enable = False
 
     if should_enable:
-        enabled = _get_enabled_set()
-        disabled = _get_disabled_set()
-        enabled.add(installed_name)
-        disabled.discard(installed_name)
-        _save_enabled_set(enabled)
-        _save_disabled_set(disabled)
+        _set_plugin_enabled_state(activation_name, enabled=True)
         console.print(
-            f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
+            f"[green]✓[/green] Plugin [bold]{activation_name}[/bold] enabled.",
         )
     else:
         console.print(
             f"[dim]Plugin installed but not enabled. "
-            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]",
+            f"Run `hermes plugins enable {activation_name}` to activate.[/dim]",
         )
 
     console.print("[dim]Restart the gateway for the plugin to take effect:[/dim]")
@@ -682,38 +833,68 @@ def cmd_disable(name: str) -> None:
 
 
 def _plugin_exists(name: str) -> bool:
-    """Return True if a plugin with *name* is installed (user) or bundled."""
-    # Installed: directory name or manifest name match in user plugins dir
-    user_dir = _plugins_dir()
-    if user_dir.is_dir():
-        if (user_dir / name).is_dir():
-            return True
-        for child in user_dir.iterdir():
-            if not child.is_dir():
-                continue
-            manifest = _read_manifest(child)
+    """Return True if a plugin with *name* is installed, bundled, or pip-registered."""
+    # Installed/bundled directory plugins: match directory key or manifest name.
+    from hermes_cli.plugins import get_bundled_plugins_dir
+
+    for base in (get_bundled_plugins_dir(), _plugins_dir()):
+        if not base.is_dir():
+            continue
+        for key, plugin_dir in _iter_plugin_manifest_dirs(base):
+            if key == name:
+                return True
+            manifest = _read_manifest(plugin_dir)
             if manifest.get("name") == name:
                 return True
-    # Bundled: <repo>/plugins/<name>/ (or HERMES_BUNDLED_PLUGINS on Nix).
-    from hermes_cli.plugins import get_bundled_plugins_dir
-    repo_plugins = get_bundled_plugins_dir()
-    if repo_plugins.is_dir():
-        candidate = repo_plugins / name
-        if candidate.is_dir() and (
-            (candidate / "plugin.yaml").exists()
-            or (candidate / "plugin.yml").exists()
-        ):
-            return True
-    return False
+
+    # Pip entry-point plugins.
+    try:
+        import importlib.metadata
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=ENTRY_POINTS_GROUP)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(ENTRY_POINTS_GROUP, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+        return any(ep.name == name for ep in group_eps)
+    except Exception:
+        return False
+
+
+def _iter_plugin_manifest_dirs(base: Path) -> list[tuple[str, Path]]:
+    """Return ``[(key, path)]`` for flat and one-level category plugins."""
+    results: list[tuple[str, Path]] = []
+    if not base.is_dir():
+        return results
+    for child in sorted(base.iterdir()):
+        if not child.is_dir():
+            continue
+        manifest = child / "plugin.yaml"
+        if not manifest.exists():
+            manifest = child / "plugin.yml"
+        if manifest.exists():
+            results.append((child.name, child))
+            continue
+        for grandchild in sorted(child.iterdir()):
+            if not grandchild.is_dir():
+                continue
+            nested_manifest = grandchild / "plugin.yaml"
+            if not nested_manifest.exists():
+                nested_manifest = grandchild / "plugin.yml"
+            if nested_manifest.exists():
+                results.append((f"{child.name}/{grandchild.name}", grandchild))
+    return results
 
 
 def _discover_all_plugins() -> list:
-    """Return a list of (name, version, description, source, dir_path) for
-    every plugin the loader can see — user + bundled + project.
+    """Return (name, version, description, source, dir_path) for visible plugins.
 
-    Matches the ordering/dedup of ``PluginManager.discover_and_load``:
-    bundled first, then user, then project; user overrides bundled on
-    name collision.
+    Covers bundled/user directory plugins (flat and category), plus pip
+    entry-point plugins. Directory plugin names use manifest ``name`` when
+    present so users can enable by the same name PluginManager accepts.
     """
     try:
         import yaml
@@ -722,41 +903,56 @@ def _discover_all_plugins() -> list:
 
     seen: dict = {}  # name -> (name, version, description, source, path)
 
-    # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
-    from hermes_cli.plugins import get_bundled_plugins_dir
+    from hermes_cli.plugins import ENTRY_POINTS_GROUP, get_bundled_plugins_dir
+
     repo_plugins = get_bundled_plugins_dir()
     for base, source in ((repo_plugins, "bundled"), (_plugins_dir(), "user")):
-        if not base.is_dir():
-            continue
-        for d in sorted(base.iterdir()):
-            if not d.is_dir():
-                continue
-            if source == "bundled" and d.name in {"memory", "context_engine"}:
+        for key, d in _iter_plugin_manifest_dirs(base):
+            # Provider-only categories have dedicated selectors elsewhere; keep
+            # this list focused on plugins a user can enable/disable directly.
+            if source == "bundled" and key.split("/", 1)[0] in {
+                "memory",
+                "context_engine",
+                "model-providers",
+            }:
                 continue
             manifest_file = d / "plugin.yaml"
             if not manifest_file.exists():
                 manifest_file = d / "plugin.yml"
-            if not manifest_file.exists():
-                continue
-            name = d.name
+            name = key
             version = ""
             description = ""
             if yaml:
                 try:
                     with open(manifest_file, encoding="utf-8") as f:
                         manifest = yaml.safe_load(f) or {}
-                    name = manifest.get("name", d.name)
+                    name = manifest.get("name", key)
                     version = manifest.get("version", "")
                     description = manifest.get("description", "")
                 except Exception:
                     pass
-            # User plugins override bundled on name collision.
             if name in seen and source == "bundled":
                 continue
             src_label = source
             if source == "user" and (d / ".git").exists():
                 src_label = "git"
             seen[name] = (name, version, description, src_label, d)
+
+    try:
+        import importlib.metadata
+
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=ENTRY_POINTS_GROUP)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(ENTRY_POINTS_GROUP, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+        for ep in group_eps:
+            seen.setdefault(ep.name, (ep.name, "", "", "pip", ep.value))
+    except Exception:
+        pass
+
     return list(seen.values())
 
 
@@ -796,7 +992,97 @@ def cmd_list() -> None:
     console.print()
     console.print("[dim]Interactive toggle:[/dim] hermes plugins")
     console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
+    console.print("[dim]Registry search:[/dim] hermes plugins search [query]")
     console.print("[dim]Plugins are opt-in by default — only 'enabled' plugins load.[/dim]")
+
+
+def _format_registry_source(entry: dict[str, Any]) -> str:
+    field, value = _registry_install_source(entry)
+    if field == "extra_name":
+        return f"extra:{value}"
+    if field == "bundled_key":
+        return f"core:{value}"
+    if field == "pip_name":
+        return f"pip:{value}"
+    if field == "git_url":
+        return "git"
+    if field == "tarball_url":
+        return "tarball"
+    return field
+
+
+def cmd_search(query: str = "") -> None:
+    """Search configured plugin registries/taps."""
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    results, errors = search_registry_plugins(query or "")
+    for error in errors:
+        console.print(f"[yellow]Warning:[/yellow] {error}")
+
+    if not results:
+        console.print("[dim]No registry plugins matched.[/dim]")
+        console.print("[dim]Add a tap with:[/dim] hermes plugins tap add <url-or-path>")
+        return
+
+    table = Table(title="Plugin Registry", show_lines=False)
+    table.add_column("Name", style="bold")
+    table.add_column("Tier", style="cyan")
+    table.add_column("Install", style="dim")
+    table.add_column("Description")
+    table.add_column("Tap", style="dim")
+    for entry in results:
+        table.add_row(
+            entry["name"],
+            entry.get("tier", "community"),
+            _format_registry_source(entry),
+            entry.get("description", ""),
+            entry.get("_registry_url", ""),
+        )
+    console.print(table)
+    console.print("[dim]Install with:[/dim] hermes plugins install <name> --enable")
+
+
+def cmd_tap_list() -> None:
+    """List plugin registry/tap URLs."""
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    default_and_user = get_configured_registry_urls(include_default=True)
+    user_only = set(get_configured_registry_urls(include_default=False))
+    table = Table(title="Plugin Registry Taps", show_lines=False)
+    table.add_column("URL / Path")
+    table.add_column("Source", style="dim")
+    for url in default_and_user:
+        table.add_row(url, "user" if url in user_only else "default")
+    console.print(table)
+
+
+def cmd_tap_add(url: str) -> None:
+    """Add and validate a plugin registry/tap URL."""
+    from rich.console import Console
+
+    console = Console()
+    try:
+        load_registry_document(url)
+    except Exception as exc:
+        console.print(f"[red]Error:[/red] Registry tap did not validate: {exc}")
+        sys.exit(1)
+    configured = add_configured_registry_url(url)
+    console.print(f"[green]✓[/green] Added plugin registry tap: {url}")
+    console.print(f"[dim]{len(configured)} user tap(s) configured.[/dim]")
+
+
+def cmd_tap_remove(url: str) -> None:
+    """Remove a plugin registry/tap URL."""
+    from rich.console import Console
+
+    console = Console()
+    configured = remove_configured_registry_url(url)
+    console.print(f"[green]✓[/green] Removed plugin registry tap: {url}")
+    console.print(f"[dim]{len(configured)} user tap(s) configured.[/dim]")
 
 
 # ---------------------------------------------------------------------------
@@ -1316,40 +1602,52 @@ def dashboard_install_plugin(
 ) -> dict[str, Any]:
     """Non-interactive install for the web dashboard. Returns a JSON-serializable dict."""
     warnings: list[str] = []
-    try:
-        git_url = _resolve_git_url(identifier)
-        if git_url.startswith(("http://", "file://")):
-            warnings.append(
-                "Insecure URL scheme; prefer https:// or git@ for production installs.",
-            )
-    except ValueError:
-        pass
+    registry_entry, registry_errors = _registry_entry_for_identifier(identifier)
+    source_field = "git_url"
 
     try:
-        target, installed_manifest, installed_name = _install_plugin_core(
-            identifier,
-            force=force,
-        )
+        if registry_entry:
+            target, installed_manifest, activation_name, source_field = _install_registry_entry(
+                registry_entry,
+                force=force,
+            )
+            installed_name = str(installed_manifest.get("name") or activation_name)
+        else:
+            try:
+                git_url = _resolve_git_url(identifier)
+                if git_url.startswith(("http://", "file://")):
+                    warnings.append(
+                        "Insecure URL scheme; prefer https:// or git@ for production installs.",
+                    )
+            except ValueError as exc:
+                detail = str(exc)
+                if registry_errors:
+                    detail += " Registry lookup also failed: " + "; ".join(registry_errors)
+                return {"ok": False, "error": detail}
+
+            target, installed_manifest, installed_name = _install_plugin_core(
+                identifier,
+                force=force,
+            )
+            activation_name = installed_name
     except PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
 
     missing_env = _missing_requires_env_names(installed_manifest)
     if enable:
-        en = _get_enabled_set()
-        dis = _get_disabled_set()
-        en.add(installed_name)
-        dis.discard(installed_name)
-        _save_enabled_set(en)
-        _save_disabled_set(dis)
+        _set_plugin_enabled_state(activation_name, enabled=True)
 
     hint: str | None = None
-    ap = target / "after-install.md"
-    if ap.exists():
-        hint = str(ap)
+    if target is not None:
+        ap = target / "after-install.md"
+        if ap.exists():
+            hint = str(ap)
 
     return {
         "ok": True,
         "plugin_name": installed_name,
+        "activation_name": activation_name,
+        "install_source": source_field,
         "warnings": warnings,
         "missing_env": missing_env,
         "after_install_path": hint,
@@ -1577,6 +1875,21 @@ def plugins_command(args) -> None:
         cmd_disable(args.name)
     elif action in {"list", "ls"}:
         cmd_list()
+    elif action == "search":
+        cmd_search(getattr(args, "query", "") or "")
+    elif action == "tap":
+        tap_action = getattr(args, "tap_action", None)
+        if tap_action in {None, "list", "ls"}:
+            cmd_tap_list()
+        elif tap_action == "add":
+            cmd_tap_add(args.url)
+        elif tap_action in {"remove", "rm"}:
+            cmd_tap_remove(args.url)
+        else:
+            from rich.console import Console
+
+            Console().print(f"[red]Unknown plugins tap action: {tap_action}[/red]")
+            sys.exit(1)
     elif action is None:
         cmd_toggle()
     else:

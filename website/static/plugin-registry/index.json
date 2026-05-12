@@ -1,5 +1,27 @@
 {
   "$schema": "https://hermes-agent.nousresearch.com/plugin-registry/schema.json",
   "version": 1,
-  "plugins": []
+  "plugins": [
+    {
+      "name": "disk-cleanup",
+      "tier": "core",
+      "description": "Bundled Hermes disk cleanup plugin for checking cache and artifact storage usage.",
+      "maintainer": "Hermes Agent",
+      "tags": ["maintenance", "storage", "core"],
+      "bundled_key": "disk-cleanup",
+      "homepage": "https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins",
+      "license": "MIT"
+    },
+    {
+      "name": "hermes-slack",
+      "tier": "extra",
+      "description": "Official Slack gateway adapter and CLI helpers for Hermes.",
+      "maintainer": "Hermes Agent",
+      "tags": ["messaging", "slack", "gateway"],
+      "extra_name": "slack",
+      "plugin_key": "hermes-slack",
+      "homepage": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack",
+      "license": "MIT"
+    }
+  ]
 }

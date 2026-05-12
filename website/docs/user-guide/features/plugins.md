@@ -261,16 +261,55 @@ Declarative plugins are symlinked with a `nix-managed-` prefix — they coexist 
 ## Managing plugins
 
 ```bash
-hermes plugins                               # unified interactive UI
-hermes plugins list                          # table: enabled / disabled / not enabled
-hermes plugins install user/repo             # install from Git, then prompt Enable? [y/N]
-hermes plugins install user/repo --enable    # install AND enable (no prompt)
-hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
-hermes plugins update my-plugin              # pull latest
-hermes plugins remove my-plugin              # uninstall
-hermes plugins enable my-plugin              # add to allow-list
-hermes plugins disable my-plugin             # remove from allow-list + add to disabled
+hermes plugins                                    # unified interactive UI
+hermes plugins list                               # table: enabled / disabled / not enabled
+hermes plugins search slack                       # search core/extra/community registry taps
+hermes plugins tap list                           # show configured registry taps
+hermes plugins tap add https://example/tap.json   # add a community/private tap
+hermes plugins install hermes-slack --enable      # install by registry name and enable
+hermes plugins install user/repo                  # install from Git, then prompt Enable? [y/N]
+hermes plugins install user/repo --enable         # install AND enable (no prompt)
+hermes plugins install user/repo --no-enable      # install but leave disabled (no prompt)
+hermes plugins update my-plugin                   # pull latest for Git-installed plugins
+hermes plugins remove my-plugin                   # uninstall user-installed directory plugins
+hermes plugins enable my-plugin                   # add to allow-list
+hermes plugins disable my-plugin                  # remove from allow-list + add to disabled
 ```
+
+`hermes plugins install <identifier>` accepts:
+
+| Identifier type | Registry field | What Hermes does |
+|---|---|---|
+| Bundled/core plugin name | `bundled_key` | Verifies the plugin exists in this Hermes install, then lets you enable it |
+| Official optional extra | `extra_name` | Runs `python -m pip install 'hermes-agent[extra]'`, then lets you enable it |
+| Community pip package | `pip_name` | Runs `python -m pip install <package>`, then lets you enable it |
+| Community Git repo | `git_url` | Clones into `~/.hermes/plugins/`, copies `.example` files, prompts for env vars |
+| Community HTTPS tarball/wheel | `tarball_url` | Installs the package via pip, then lets you enable it |
+| Direct `owner/repo` or URL | n/a | Bypasses registry lookup and installs from Git |
+
+Registry installs are still opt-in: `--enable` writes the plugin's runtime key to
+`plugins.enabled`; without it Hermes prompts in a TTY and defaults to disabled in
+scripts. Pip/tarball/extra installs require restarting Hermes so entry-point
+plugins are rediscovered.
+
+### Registry taps
+
+Hermes ships a default static registry at
+`https://hermes-agent.nousresearch.com/plugin-registry/index.json`. You can add
+more taps for community, team, or private plugins:
+
+```bash
+hermes plugins tap add https://example.com/hermes-plugins.json
+hermes plugins tap add ./local-plugin-tap.json
+hermes plugins search linear
+hermes plugins install hermes-linear --enable
+```
+
+Tap files are JSON documents matching the published schema:
+`https://hermes-agent.nousresearch.com/plugin-registry/schema.json`. User taps
+are stored in `plugins.registry_urls` in `config.yaml`; later taps override
+metadata for duplicate plugin names, so private taps can pin or replace default
+registry entries.
 
 ### Interactive UI
 

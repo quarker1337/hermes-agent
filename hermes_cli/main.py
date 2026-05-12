@@ -10432,17 +10432,23 @@ Examples:
     # =========================================================================
     plugins_parser = subparsers.add_parser(
         "plugins",
-        help="Manage plugins — install, update, remove, list",
-        description="Install plugins from Git repositories, update, remove, or list them.",
+        help="Manage plugins — install, update, remove, list, search",
+        description=(
+            "Install plugins from registry names, Git repositories, pip packages, "
+            "Hermes extras, or registry taps; update, remove, list, and search them."
+        ),
     )
     plugins_subparsers = plugins_parser.add_subparsers(dest="plugins_action")
 
     plugins_install = plugins_subparsers.add_parser(
-        "install", help="Install a plugin from a Git URL or owner/repo"
+        "install", help="Install a plugin from registry name, Git URL, or owner/repo"
     )
     plugins_install.add_argument(
         "identifier",
-        help="Git URL or owner/repo shorthand (e.g. anpicasso/hermes-plugin-chrome-profiles)",
+        help=(
+            "Registry plugin name, Git URL, or owner/repo shorthand "
+            "(e.g. hermes-slack or anpicasso/hermes-plugin-chrome-profiles)"
+        ),
     )
     plugins_install.add_argument(
         "--force",
@@ -10473,6 +10479,28 @@ Examples:
     plugins_remove.add_argument("name", help="Plugin directory name to remove")
 
     plugins_subparsers.add_parser("list", aliases=["ls"], help="List installed plugins")
+
+    plugins_search = plugins_subparsers.add_parser(
+        "search", help="Search plugin registry/taps"
+    )
+    plugins_search.add_argument(
+        "query",
+        nargs="?",
+        default="",
+        help="Optional search text (matches name, description, tier, maintainer, tags)",
+    )
+
+    plugins_tap = plugins_subparsers.add_parser(
+        "tap", help="Manage plugin registry/tap URLs"
+    )
+    plugins_tap_subparsers = plugins_tap.add_subparsers(dest="tap_action")
+    plugins_tap_subparsers.add_parser("list", aliases=["ls"], help="List plugin taps")
+    plugins_tap_add = plugins_tap_subparsers.add_parser("add", help="Add a plugin tap URL/path")
+    plugins_tap_add.add_argument("url", help="HTTPS URL, file:// URL, or local JSON path")
+    plugins_tap_remove = plugins_tap_subparsers.add_parser(
+        "remove", aliases=["rm"], help="Remove a plugin tap URL/path"
+    )
+    plugins_tap_remove.add_argument("url", help="Tap URL/path to remove")
 
     plugins_enable = plugins_subparsers.add_parser(
         "enable", help="Enable a disabled plugin"

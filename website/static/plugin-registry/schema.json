@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hermes-agent.nousresearch.com/plugin-registry/schema.json",
   "title": "Hermes Agent Plugin Registry",
-  "description": "Static registry/tap format for community Hermes Agent plugins.",
+  "description": "Static registry/tap format for Hermes Agent core, extra, and community plugins.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -33,6 +33,10 @@
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
     },
+    "plugin_key": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._/-]{0,127}$"
+    },
     "plugin": {
       "type": "object",
       "additionalProperties": false,
@@ -43,6 +47,16 @@
         "tags"
       ],
       "oneOf": [
+        {
+          "required": [
+            "bundled_key"
+          ]
+        },
+        {
+          "required": [
+            "extra_name"
+          ]
+        },
         {
           "required": [
             "pip_name"
@@ -63,6 +77,14 @@
         "name": {
           "$ref": "#/$defs/identifier"
         },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "core",
+            "extra",
+            "community"
+          ]
+        },
         "description": {
           "type": "string",
           "minLength": 1,
@@ -79,6 +101,16 @@
             "$ref": "#/$defs/identifier"
           },
           "uniqueItems": true
+        },
+        "bundled_key": {
+          "$ref": "#/$defs/plugin_key"
+        },
+        "plugin_key": {
+          "$ref": "#/$defs/plugin_key"
+        },
+        "extra_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
         },
         "pip_name": {
           "type": "string",

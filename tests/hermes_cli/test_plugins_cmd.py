@@ -14,11 +14,14 @@ import yaml
 from hermes_cli.plugins_cmd import (
     PluginOperationError,
     _copy_example_files,
+    _install_registry_entry,
+    _plugin_exists,
     _read_manifest,
     _repo_name_from_url,
     _resolve_git_executable,
     _resolve_git_url,
     _sanitize_plugin_name,
+    dashboard_install_plugin,
     plugins_command,
 )
 
@@ -455,6 +458,152 @@ class TestCopyExampleFiles:
 
         # Should have printed a warning
         assert any("Warning" in str(c) for c in console.print.call_args_list)
+
+
+class TestRegistryInstall:
+    """Registry-backed installs support core, extra, pip, git, and tarball sources."""
+
+    def test_install_registry_entry_bundled_activates_existing_core_plugin(self):
+        entry = {
+            "name": "disk-cleanup",
+            "description": "Cleanup plugin",
+            "bundled_key": "disk-cleanup",
+            "tags": ["core"],
+            "maintainer": "Hermes Agent",
+        }
+
+        with patch("hermes_cli.plugins_cmd._plugin_exists", return_value=True):
+            target, manifest, activation, source = _install_registry_entry(entry, force=False)
+
+        assert target is None
+        assert manifest["name"] == "disk-cleanup"
+        assert activation == "disk-cleanup"
+        assert source == "bundled_key"
+
+    def test_install_registry_entry_bundled_missing_raises(self):
+        entry = {
+            "name": "missing-core",
+            "description": "Missing bundled plugin",
+            "bundled_key": "missing-core",
+            "tags": ["core"],
+            "maintainer": "Hermes Agent",
+        }
+
+        with patch("hermes_cli.plugins_cmd._plugin_exists", return_value=False):
+            with pytest.raises(PluginOperationError, match="does not contain it"):
+                _install_registry_entry(entry, force=False)
+
+    def test_install_registry_entry_extra_installs_hermes_extra(self):
+        entry = {
+            "name": "hermes-slack",
+            "description": "Slack plugin",
+            "extra_name": "slack",
+            "plugin_key": "hermes-slack",
+            "tags": ["slack"],
+            "maintainer": "Hermes Agent",
+        }
+
+        with patch("hermes_cli.plugins_cmd._run_pip_install") as mock_pip:
+            target, manifest, activation, source = _install_registry_entry(entry, force=False)
+
+        mock_pip.assert_called_once_with("hermes-agent[slack]")
+        assert target is None
+        assert manifest["name"] == "hermes-slack"
+        assert activation == "hermes-slack"
+        assert source == "extra_name"
+
+    @pytest.mark.parametrize(
+        ("field", "value", "expected_requirement"),
+        [
+            ("pip_name", "hermes-linear", "hermes-linear"),
+            ("tarball_url", "https://example.com/hermes-linear.tar.gz", "https://example.com/hermes-linear.tar.gz"),
+        ],
+    )
+    def test_install_registry_entry_python_package_sources(self, field, value, expected_requirement):
+        entry = {
+            "name": "hermes-linear",
+            "description": "Linear plugin",
+            field: value,
+            "tags": ["linear"],
+            "maintainer": "Example",
+        }
+
+        with patch("hermes_cli.plugins_cmd._run_pip_install") as mock_pip:
+            target, manifest, activation, source = _install_registry_entry(entry, force=False)
+
+        mock_pip.assert_called_once_with(expected_requirement)
+        assert target is None
+        assert manifest["name"] == "hermes-linear"
+        assert activation == "hermes-linear"
+        assert source == field
+
+    def test_install_registry_entry_git_uses_existing_git_installer(self, tmp_path):
+        entry = {
+            "name": "registry-name",
+            "description": "Git plugin",
+            "git_url": "https://github.com/acme/hermes-plugin.git",
+            "plugin_key": "runtime-name",
+            "tags": ["git"],
+            "maintainer": "Example",
+        }
+
+        with patch(
+            "hermes_cli.plugins_cmd._install_plugin_core",
+            return_value=(tmp_path, {"name": "manifest-name"}, "manifest-name"),
+        ) as mock_install:
+            target, manifest, activation, source = _install_registry_entry(entry, force=True)
+
+        mock_install.assert_called_once_with(entry["git_url"], force=True)
+        assert target == tmp_path
+        assert manifest["name"] == "manifest-name"
+        assert activation == "runtime-name"
+        assert source == "git_url"
+
+    def test_dashboard_install_plugin_resolves_registry_without_git_shorthand(self):
+        entry = {
+            "name": "hermes-slack",
+            "description": "Slack plugin",
+            "extra_name": "slack",
+            "plugin_key": "hermes-slack",
+            "tags": ["slack"],
+            "maintainer": "Hermes Agent",
+        }
+
+        with patch("hermes_cli.plugins_cmd._registry_entry_for_identifier", return_value=(entry, [])), \
+             patch(
+                 "hermes_cli.plugins_cmd._install_registry_entry",
+                 return_value=(None, {"name": "hermes-slack"}, "hermes-slack", "extra_name"),
+             ), \
+             patch("hermes_cli.plugins_cmd._set_plugin_enabled_state") as mock_enable:
+            result = dashboard_install_plugin("hermes-slack", force=False, enable=True)
+
+        assert result["ok"] is True
+        assert result["plugin_name"] == "hermes-slack"
+        assert result["activation_name"] == "hermes-slack"
+        assert result["install_source"] == "extra_name"
+        mock_enable.assert_called_once_with("hermes-slack", enabled=True)
+
+
+class TestPluginsCommandDispatch:
+    """Argparse dispatch covers registry search and tap management commands."""
+
+    def test_dispatch_search(self):
+        with patch("hermes_cli.plugins_cmd.cmd_search") as mock_search:
+            plugins_command(types.SimpleNamespace(plugins_action="search", query="slack"))
+        mock_search.assert_called_once_with("slack")
+
+    def test_dispatch_tap_list_add_remove(self):
+        with patch("hermes_cli.plugins_cmd.cmd_tap_list") as mock_list:
+            plugins_command(types.SimpleNamespace(plugins_action="tap", tap_action=None))
+        mock_list.assert_called_once_with()
+
+        with patch("hermes_cli.plugins_cmd.cmd_tap_add") as mock_add:
+            plugins_command(types.SimpleNamespace(plugins_action="tap", tap_action="add", url="tap.json"))
+        mock_add.assert_called_once_with("tap.json")
+
+        with patch("hermes_cli.plugins_cmd.cmd_tap_remove") as mock_remove:
+            plugins_command(types.SimpleNamespace(plugins_action="tap", tap_action="remove", url="tap.json"))
+        mock_remove.assert_called_once_with("tap.json")
 
 
 class TestPromptPluginEnvVars:

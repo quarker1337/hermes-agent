@@ -418,6 +418,7 @@ def test_explicit_top_level_slack_enabled_false_wins_over_env_token(monkeypatch,
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.delenv("SLACK_REQUIRE_MENTION", raising=False)
 
     config = load_gateway_config()
@@ -445,6 +446,7 @@ def test_explicit_platforms_slack_enabled_false_wins_over_env_token(monkeypatch,
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
 
     config = load_gateway_config()
 
