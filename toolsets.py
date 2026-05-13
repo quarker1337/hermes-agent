@@ -785,6 +785,117 @@ def create_custom_toolset(
     }
 
 
+_TOOLSET_FEATURE_HINTS = {
+    "web": "web-search",
+    "search": "web-search",
+    "browser": "browser",
+    "image_gen": "image-gen",
+    "tts": "tts",
+    "cronjob": "cron",
+    "homeassistant": "homeassistant",
+    "discord": "messaging",
+    "discord_admin": "messaging",
+    "feishu_doc": "feishu",
+    "feishu_drive": "feishu",
+    "rl": "rl",
+    "spotify": "spotify",
+    "yuanbao": "yuanbao",
+    "computer_use": "computer-use",
+}
+
+
+def get_toolset_install_hint(name: str) -> str:
+    """Return a concise install/configuration hint for a toolset."""
+    if name.startswith("mcp-"):
+        return "Configure the MCP server, then run `hermes tools list` again."
+    if name.startswith("hermes-"):
+        platform = name[len("hermes-"):]
+        return f"Configure the `{platform}` platform or install its optional integration."
+
+    feature = _TOOLSET_FEATURE_HINTS.get(name, name.replace("_", "-"))
+    return (
+        f"Install/configure the `{feature}` feature, or run `hermes setup tools` "
+        "to configure tool providers."
+    )
+
+
+def get_toolset_runtime_status(name: str) -> Dict[str, Any]:
+    """Return declared/installed/runtime-available status for a toolset.
+
+    Static declarations in ``TOOLSETS`` are not enough to tell the user a
+    toolset is usable: optional extras may be missing and registered tools can
+    still fail their runtime ``check_fn`` (API keys, local services, platform
+    session context, etc.).  This helper is the shared source for user-facing
+    status in both ``/toolsets`` and ``hermes tools``.
+    """
+    registry_error = None
+    registry_obj = None
+
+    try:
+        from tools.registry import discover_builtin_tools, registry
+
+        discover_builtin_tools()
+        registry_obj = registry
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        registry_error = str(exc)
+
+    declared_tools = sorted(set(resolve_toolset(name)))
+    installed_tools: List[str] = []
+    available_tools: List[str] = []
+    requirements: List[str] = []
+
+    if registry_obj is not None:
+        try:
+            registered_names = set(registry_obj.get_all_tool_names())
+            installed_tools = sorted(t for t in declared_tools if t in registered_names)
+
+            available_defs = registry_obj.get_definitions(set(declared_tools), quiet=True)
+            available_tools = sorted(
+                td.get("function", {}).get("name", "")
+                for td in available_defs
+                if td.get("function", {}).get("name")
+            )
+
+            declared_set = set(declared_tools)
+            for ts_requirements in registry_obj.get_toolset_requirements().values():
+                if not declared_set.intersection(ts_requirements.get("tools", [])):
+                    continue
+                for env_var in ts_requirements.get("env_vars", []):
+                    if env_var not in requirements:
+                        requirements.append(env_var)
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            registry_error = str(exc)
+
+    available_count = len(available_tools)
+    installed_count = len(installed_tools)
+    declared_count = len(declared_tools)
+
+    if available_count:
+        reason = "available" if available_count == declared_count else "partially available"
+    elif installed_count:
+        reason = "install/config required"
+    elif declared_count:
+        reason = "not installed"
+    else:
+        reason = "unknown toolset"
+
+    return {
+        "name": name,
+        "available": bool(available_tools),
+        "fully_available": bool(declared_tools) and available_count == declared_count,
+        "reason": reason,
+        "hint": get_toolset_install_hint(name),
+        "tools": available_tools,
+        "available_tools": available_tools,
+        "installed_tools": installed_tools,
+        "declared_tools": declared_tools,
+        "requirements": sorted(requirements),
+        "available_count": available_count,
+        "installed_count": installed_count,
+        "declared_count": declared_count,
+        "error": registry_error,
+    }
+
 
 
 def get_toolset_info(name: str) -> Dict[str, Any]:

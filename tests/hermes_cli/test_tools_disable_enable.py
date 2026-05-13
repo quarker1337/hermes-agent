@@ -5,6 +5,18 @@ from unittest.mock import patch
 from hermes_cli.tools_config import tools_disable_enable_command
 
 
+def _runtime_status(name: str, *, available: bool = True, reason: str = "available") -> dict:
+    return {
+        "name": name,
+        "available": available,
+        "reason": reason,
+        "hint": f"configure {name}",
+        "available_count": 1 if available else 0,
+        "installed_count": 1,
+        "declared_count": 1,
+    }
+
+
 # ── Built-in toolset disable ────────────────────────────────────────────────
 
 
@@ -46,6 +58,7 @@ class TestToolsEnableBuiltin:
     def test_enable_adds_toolset_to_platform(self):
         config = {"platform_toolsets": {"cli": ["memory"]}}
         with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config._runtime_status_for_toolset", side_effect=_runtime_status), \
              patch("hermes_cli.tools_config.save_config") as mock_save:
             tools_disable_enable_command(Namespace(tools_action="enable", names=["web"], platform="cli"))
         saved = mock_save.call_args[0][0]
@@ -54,10 +67,26 @@ class TestToolsEnableBuiltin:
     def test_enable_already_present_is_idempotent(self):
         config = {"platform_toolsets": {"cli": ["web"]}}
         with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config._runtime_status_for_toolset", side_effect=_runtime_status), \
              patch("hermes_cli.tools_config.save_config") as mock_save:
             tools_disable_enable_command(Namespace(tools_action="enable", names=["web"], platform="cli"))
         saved = mock_save.call_args[0][0]
         assert saved["platform_toolsets"]["cli"].count("web") == 1
+
+    def test_enable_unavailable_toolset_is_rejected(self, capsys):
+        config = {"platform_toolsets": {"cli": ["memory"]}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch(
+                 "hermes_cli.tools_config._runtime_status_for_toolset",
+                 return_value=_runtime_status("web", available=False, reason="not installed"),
+             ), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(Namespace(tools_action="enable", names=["web"], platform="cli"))
+        saved = mock_save.call_args[0][0]
+        assert "web" not in saved["platform_toolsets"]["cli"]
+        out = capsys.readouterr().out
+        assert "Toolset 'web' is not ready" in out
+        assert "Enabled: web" not in out
 
 
 # ── MCP tool disable ────────────────────────────────────────────────────────
@@ -159,17 +188,36 @@ class TestToolsList:
 
     def test_list_shows_enabled_toolsets(self, capsys):
         config = {"platform_toolsets": {"cli": ["web", "memory"]}}
-        with patch("hermes_cli.tools_config.load_config", return_value=config):
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config._runtime_status_for_toolset", side_effect=_runtime_status):
             tools_disable_enable_command(Namespace(tools_action="list", platform="cli"))
         out = capsys.readouterr().out
         assert "web" in out
         assert "memory" in out
 
+    def test_list_marks_enabled_unavailable_toolset_not_ready(self, capsys):
+        config = {"platform_toolsets": {"cli": ["web"]}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch(
+                 "hermes_cli.tools_config._get_effective_configurable_toolsets",
+                 return_value=[("web", "Web", "web tools")],
+             ), \
+             patch(
+                 "hermes_cli.tools_config._runtime_status_for_toolset",
+                 return_value=_runtime_status("web", available=False, reason="install/config required"),
+             ):
+            tools_disable_enable_command(Namespace(tools_action="list", platform="cli"))
+        out = capsys.readouterr().out
+        assert "! enabled, not ready" in out
+        assert "install/config required" in out
+        assert "hint: configure web" in out
+
     def test_list_shows_mcp_excluded_tools(self, capsys):
         config = {
             "mcp_servers": {"github": {"tools": {"exclude": ["create_issue"]}}},
         }
-        with patch("hermes_cli.tools_config.load_config", return_value=config):
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config._runtime_status_for_toolset", side_effect=_runtime_status):
             tools_disable_enable_command(Namespace(tools_action="list", platform="cli"))
         out = capsys.readouterr().out
         assert "github" in out

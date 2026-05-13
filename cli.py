@@ -676,7 +676,7 @@ from model_tools import get_tool_definitions, get_toolset_for_tool
 # Extracted CLI modules (Phase 3)
 from hermes_cli.banner import build_welcome_banner
 from hermes_cli.commands import SlashCommandCompleter, SlashCommandAutoSuggest
-from toolsets import get_all_toolsets, get_toolset_info, validate_toolset
+from toolsets import get_toolset_info, validate_toolset, get_toolset_runtime_status
 
 # Cron job system for scheduled tasks (execution is handled by the gateway)
 from cron import get_job
@@ -5316,8 +5316,16 @@ class HermesCLI:
         _cprint(f"{_DIM}Session reset. New tool configuration is active.{_RST}")
 
     def show_toolsets(self):
-        """Display available toolsets with kawaii ASCII art."""
-        all_toolsets = get_all_toolsets()
+        """Display runtime-ready toolsets with kawaii ASCII art."""
+        from hermes_cli.tools_config import (
+            _get_effective_configurable_toolsets,
+            _toolset_allowed_for_platform,
+        )
+
+        entries = [
+            entry for entry in _get_effective_configurable_toolsets()
+            if _toolset_allowed_for_platform(entry[0], "cli")
+        ]
         
         # Header
         print()
@@ -5328,22 +5336,41 @@ class HermesCLI:
         print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
         print("+" + "-" * width + "+")
         print()
-        
-        for name in sorted(all_toolsets.keys()):
-            info = get_toolset_info(name)
-            if info:
-                tool_count = info["tool_count"]
-                desc = info["description"]
-                
-                # Mark if currently enabled
-                marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "
-                print(f"  {marker} {name:<18} [{tool_count:>2} tools] - {desc}")
+
+        hidden_unready = 0
+        shown = 0
+        for name, label, _description in sorted(entries, key=lambda e: e[0]):
+            runtime = get_toolset_runtime_status(name)
+            enabled = bool(self.enabled_toolsets and name in self.enabled_toolsets)
+            if not runtime.get("available") and not enabled:
+                hidden_unready += 1
+                continue
+
+            info = get_toolset_info(name) or {}
+            desc = info.get("description") or label
+            ready_count = runtime.get("available_count", 0)
+            total_count = runtime.get("declared_count", 0)
+            reason = runtime.get("reason", "unknown")
+            marker = "(*)" if enabled and runtime.get("available") else "(!)" if enabled else "   "
+            status = "ready" if reason == "available" else reason
+            print(
+                f"  {marker} {name:<18} "
+                f"[{ready_count:>2}/{total_count:<2} ready] - {desc} ({status})"
+            )
+            if enabled and not runtime.get("available"):
+                print(f"      hint: {runtime.get('hint')}")
+            shown += 1
         
         print()
-        print("  (*) = currently enabled")
+        print("  (*) = currently enabled and ready")
+        print("  (!) = enabled in config but not runtime-ready")
+        if hidden_unready:
+            print(f"  Hidden: {hidden_unready} uninstalled/unconfigured optional toolsets")
+        if not shown:
+            print("  No runtime-ready toolsets found")
         print()
-        print("  Tip: Use 'all' or '*' to enable all toolsets")
-        print("  Example: python cli.py --toolsets web,terminal")
+        print("  Tip: Use 'hermes tools list' for unavailable toolsets and install hints")
+        print("  Example: hermes tools enable web")
         print()
     
     def _handle_profile_command(self):

@@ -11,6 +11,7 @@ from toolsets import (
     validate_toolset,
     create_custom_toolset,
     get_toolset_info,
+    get_toolset_runtime_status,
 )
 
 
@@ -179,6 +180,61 @@ class TestCreateCustomToolset:
             assert validate_toolset("_test_custom") is True
         finally:
             del TOOLSETS["_test_custom"]
+
+
+class TestToolsetRuntimeStatus:
+    def test_distinguishes_declared_installed_and_runtime_available(self, monkeypatch):
+        reg = ToolRegistry()
+
+        def available_check():
+            return True
+
+        def unavailable_check():
+            return False
+
+        reg.register(
+            name="runtime_available_tool",
+            toolset="_runtime_status_test",
+            schema=_make_schema("runtime_available_tool", "Available"),
+            handler=_dummy_handler,
+            check_fn=available_check,
+        )
+        reg.register(
+            name="runtime_blocked_tool",
+            toolset="_runtime_status_test",
+            schema=_make_schema("runtime_blocked_tool", "Blocked"),
+            handler=_dummy_handler,
+            check_fn=unavailable_check,
+            requires_env=["BLOCKED_TOKEN"],
+        )
+
+        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr("tools.registry.discover_builtin_tools", lambda *a, **k: [])
+        TOOLSETS["_runtime_status_test"] = {
+            "description": "Runtime status test",
+            "tools": [
+                "runtime_available_tool",
+                "runtime_blocked_tool",
+                "runtime_missing_tool",
+            ],
+            "includes": [],
+        }
+        try:
+            status = get_toolset_runtime_status("_runtime_status_test")
+        finally:
+            del TOOLSETS["_runtime_status_test"]
+
+        assert status["declared_tools"] == [
+            "runtime_available_tool",
+            "runtime_blocked_tool",
+            "runtime_missing_tool",
+        ]
+        assert status["installed_tools"] == ["runtime_available_tool", "runtime_blocked_tool"]
+        assert status["available_tools"] == ["runtime_available_tool"]
+        assert status["available"] is True
+        assert status["fully_available"] is False
+        assert status["reason"] == "partially available"
+        assert status["requirements"] == ["BLOCKED_TOKEN"]
 
 
 class TestRegistryOwnedToolsets:

@@ -141,6 +141,18 @@ def _get_plugin_toolset_keys() -> set:
     except Exception:
         return set()
 
+
+def _runtime_status_for_toolset(ts_key: str) -> dict:
+    """Shared runtime status wrapper for display/validation.
+
+    Kept as a small wrapper so tests can patch it without importing the full
+    tool registry, while production uses the canonical helper in toolsets.py.
+    """
+    from toolsets import get_toolset_runtime_status
+
+    return get_toolset_runtime_status(ts_key)
+
+
 # Platform display config — derived from the canonical registry so every
 # module shares the same data.  Kept as dict-of-dicts for backward
 # compatibility with existing ``PLATFORMS[key]["label"]`` access patterns.
@@ -2760,6 +2772,35 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
     return failed_servers
 
 
+def _format_runtime_status(ts_key: str, enabled: bool) -> tuple[str, str, dict]:
+    """Return (status label, detail text, runtime status) for list output."""
+    runtime = _runtime_status_for_toolset(ts_key)
+    available = bool(runtime.get("available"))
+    installed_count = int(runtime.get("installed_count") or 0)
+    available_count = int(runtime.get("available_count") or 0)
+    declared_count = int(runtime.get("declared_count") or 0)
+    reason = runtime.get("reason") or "unknown"
+
+    if enabled and available:
+        label = color("✓ enabled", Colors.GREEN)
+    elif enabled:
+        label = color("! enabled, not ready", Colors.YELLOW)
+    elif available:
+        label = color("✗ disabled", Colors.RED)
+    elif installed_count:
+        label = color("- unavailable", Colors.YELLOW)
+    else:
+        label = color("- not installed", Colors.DIM)
+
+    if declared_count:
+        detail = f"{available_count}/{declared_count} ready"
+        if reason != "available":
+            detail = f"{detail}; {reason}"
+    else:
+        detail = reason
+    return label, detail, runtime
+
+
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
     effective_all = _get_effective_configurable_toolsets()
@@ -2773,9 +2814,11 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
     for ts_key, label, _ in effective:
         if ts_key not in builtin_keys:
             continue
-        status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
-                  else color("✗ disabled", Colors.RED))
-        print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+        enabled = ts_key in enabled_toolsets
+        status, detail, runtime = _format_runtime_status(ts_key, enabled)
+        print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}  [{detail}]")
+        if enabled and not runtime.get("available"):
+            print(color(f"      hint: {runtime.get('hint')}", Colors.DIM))
 
     # Plugin toolsets
     plugin_entries = [(k, l) for k, l, _ in effective if k not in builtin_keys]
@@ -2783,9 +2826,11 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
         print()
         print(f"Plugin toolsets ({platform}):")
         for ts_key, label in plugin_entries:
-            status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
-                      else color("✗ disabled", Colors.RED))
-            print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+            enabled = ts_key in enabled_toolsets
+            status, detail, runtime = _format_runtime_status(ts_key, enabled)
+            print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}  [{detail}]")
+            if enabled and not runtime.get("available"):
+                print(color(f"      hint: {runtime.get('hint')}", Colors.DIM))
 
     if mcp_servers:
         print()
@@ -2846,6 +2891,19 @@ def tools_disable_enable_command(args):
             )
         toolset_targets = [t for t in toolset_targets if t not in restricted_targets]
 
+    if action == "enable" and toolset_targets:
+        ready_targets: List[str] = []
+        for name in toolset_targets:
+            runtime = _runtime_status_for_toolset(name)
+            if runtime.get("available"):
+                ready_targets.append(name)
+                continue
+            _print_error(
+                f"Toolset '{name}' is not ready ({runtime.get('reason')}). "
+                f"{runtime.get('hint')}"
+            )
+        toolset_targets = ready_targets
+
     if toolset_targets:
         _apply_toolset_change(config, platform, toolset_targets, action)
 
@@ -2857,10 +2915,11 @@ def tools_disable_enable_command(args):
 
     save_config(config)
 
-    successful = [
-        t for t in targets
-        if t not in unknown_toolsets and (":" not in t or t.split(":")[0] not in failed_servers)
-    ]
+    successful = list(toolset_targets)
+    successful.extend(
+        t for t in mcp_targets
+        if t.split(":", 1)[0] not in failed_servers
+    )
     if successful:
         verb = "Disabled" if action == "disable" else "Enabled"
         _print_success(f"{verb}: {', '.join(successful)}")
