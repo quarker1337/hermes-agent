@@ -3,8 +3,19 @@
 import json
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
+
+try:
+    import numpy as np
+except ModuleNotFoundError:  # [all] intentionally excludes local-voice deps.
+    class _FakeNumpy:
+        float32 = "float32"
+
+        @staticmethod
+        def zeros(size, dtype=None):
+            return [0.0] * size
+
+    np = _FakeNumpy()
 
 
 @pytest.fixture(autouse=True)

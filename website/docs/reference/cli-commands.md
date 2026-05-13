@@ -872,6 +872,29 @@ Manage the fallback provider chain. Fallback providers are tried in order when t
 
 See [Fallback Providers](../user-guide/features/fallback-providers.md).
 
+## `hermes install-feature`
+
+```bash
+hermes install-feature FEATURE
+```
+
+Install optional dependency features after a compact/minimal install. Public feature names include:
+
+| Feature | Adds |
+|---------|------|
+| `dashboard` | FastAPI/Uvicorn backend for `hermes dashboard` |
+| `browser` | Browser/CDP Python deps (browser engine bootstrap is handled by the source checkout installer) |
+| `tts` | Edge TTS provider deps |
+| `voice` | Local voice/STT deps |
+| `gateway` | Messaging platform SDKs |
+| `web-search` | Web search/extraction providers |
+| `image-gen` | Image generation backend deps |
+| `tui` | Node package install path for `hermes --tui` / dashboard Chat UI |
+| `cron` | Backcompat cron extra |
+| `full` / `all` | Full/default optional dependency set |
+
+`web` is accepted only as a hidden backwards-compatible alias for `dashboard`; use `dashboard` in docs, scripts, and support instructions.
+
 ## `hermes hooks`
 
 ```bash
@@ -1105,7 +1128,7 @@ hermes claw migrate --source /home/user/old-openclaw
 hermes dashboard [options]
 ```
 
-Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. Requires `pip install hermes-agent[web]` (FastAPI + Uvicorn). See [Web Dashboard](/docs/user-guide/features/web-dashboard) for full documentation.
+Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. Minimal installs can add it with `hermes install-feature dashboard` or `pip install hermes-agent[dashboard]` (FastAPI + Uvicorn). See [Web Dashboard](/docs/user-guide/features/web-dashboard) for full documentation.
 
 | Option | Default | Description |
 |--------|---------|-------------|

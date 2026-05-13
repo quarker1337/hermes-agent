@@ -45,6 +45,12 @@ BOLD='\033[1m'
 # Configuration
 REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
 REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+REPO_URL_PRIMARY="$REPO_URL_SSH"
+REPO_URL_FALLBACK="$REPO_URL_HTTPS"
+REPO_URL_DISPLAY="$REPO_URL_HTTPS"
+REPO_SOURCE_LABEL="upstream default"
+REPO_URL_OVERRIDE=""
+REPO_URL_EXPLICIT=false
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an
@@ -67,8 +73,17 @@ ROOT_FHS_LAYOUT=false
 
 # Options
 USE_VENV=true
+ADDITIVE_INSTALL=false
 RUN_SETUP=true
 BRANCH="main"
+BRANCH_EXPLICIT=false
+INSTALL_OPTION="${HERMES_INSTALL_OPTION:-default}"
+INSTALL_OPTION_EXPLICIT=false
+if [ -n "${HERMES_INSTALL_OPTION:-}" ]; then
+    INSTALL_OPTION_EXPLICIT=true
+fi
+WITH_FEATURES=()
+CONFIG_CREATED=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -90,16 +105,89 @@ while [[ $# -gt 0 ]]; do
             RUN_SETUP=false
             shift
             ;;
+        --additive)
+            ADDITIVE_INSTALL=true
+            shift
+            ;;
         --branch)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo "Missing value for --branch"
+                exit 1
+            fi
             BRANCH="$2"
+            BRANCH_EXPLICIT=true
+            shift 2
+            ;;
+        --install-option)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo "Missing value for --install-option"
+                exit 1
+            fi
+            INSTALL_OPTION="$2"
+            INSTALL_OPTION_EXPLICIT=true
+            shift 2
+            ;;
+        --minimal)
+            INSTALL_OPTION="minimal"
+            INSTALL_OPTION_EXPLICIT=true
+            shift
+            ;;
+        --minimal-tui|--minimalTUI)
+            INSTALL_OPTION="minimalTUI"
+            INSTALL_OPTION_EXPLICIT=true
+            shift
+            ;;
+        --full)
+            INSTALL_OPTION="default"
+            INSTALL_OPTION_EXPLICIT=true
+            shift
+            ;;
+        --with)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo "Missing value for --with"
+                echo "Valid features: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, all"
+                exit 1
+            fi
+            feature="$2"
+            case "$feature" in
+                web)
+                    echo "--with web is deprecated; using --with dashboard instead"
+                    feature="dashboard"
+                    ;;
+                browser|tts|voice|dashboard|tui|gateway|web-search|image-gen|cron|all)
+                    ;;
+                *)
+                    echo "Unknown feature: $feature"
+                    echo "Valid features: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, all"
+                    exit 1
+                    ;;
+            esac
+            WITH_FEATURES+=("$feature")
+            shift 2
+            ;;
+        --repo)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo "Missing value for --repo"
+                exit 1
+            fi
+            REPO_URL_OVERRIDE="$2"
+            REPO_URL_EXPLICIT=true
             shift 2
             ;;
         --dir)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo "Missing value for --dir"
+                exit 1
+            fi
             INSTALL_DIR="$2"
             INSTALL_DIR_EXPLICIT=true
             shift 2
             ;;
         --hermes-home)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo "Missing value for --hermes-home"
+                exit 1
+            fi
             HERMES_HOME="$2"
             shift 2
             ;;
@@ -111,7 +199,16 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
-            echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --install-option NAME  Install option: default (full), minimal, minimalTUI"
+            echo "  --minimal      Alias for --install-option minimal"
+            echo "  --minimal-tui  Alias for --install-option minimalTUI"
+            echo "  --full         Backward-compatible alias for --install-option default"
+            echo "  --with FEATURE Install optional feature"
+            echo "                 Valid features: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, all"
+            echo "  --branch NAME  Git branch to install (default: main, or current branch when run from a checkout)"
+            echo "  --repo URL|PATH  Git repository to install from"
+            echo "                   default: local checkout's tracked remote when run from a checkout,"
+            echo "                   otherwise https://github.com/NousResearch/hermes-agent.git"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -201,6 +298,277 @@ prompt_yes_no() {
         [yY]|[yY][eE][sS]) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+
+normalize_install_option() {
+    local option="$1"
+    case "$option" in
+        default|full) echo "default" ;;
+        minimal|standard) echo "minimal" ;;
+        minimalTUI|minimal-tui|minimaltui|minimal_tui) echo "minimalTUI" ;;
+        *)
+            log_error "Unknown install option: $option"
+            log_info "Valid install options: default, minimal, minimalTUI"
+            exit 1
+            ;;
+    esac
+}
+
+has_feature() {
+    local wanted="$1"
+    local feature
+    for feature in "${WITH_FEATURES[@]}"; do
+        if [ "$feature" = "$wanted" ] || [ "$feature" = "all" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+_has_any_extra_feature() {
+    [ "${#WITH_FEATURES[@]}" -gt 0 ]
+}
+
+_csv_join_unique() {
+    local seen=""
+    local result=()
+    local item
+    for item in "$@"; do
+        [ -z "$item" ] && continue
+        case ",$seen," in
+            *,"$item",*) ;;
+            *)
+                seen="${seen:+$seen,}$item"
+                result+=("$item")
+                ;;
+        esac
+    done
+    local IFS=,
+    echo "${result[*]}"
+}
+
+append_requested_feature_extras() {
+    has_feature "web-search" && extras+=("web-search")
+    has_feature "browser" && extras+=("browser")
+    has_feature "image-gen" && extras+=("image-gen")
+    has_feature "tts" && extras+=("tts")
+    has_feature "voice" && extras+=("voice")
+    has_feature "dashboard" && extras+=("dashboard")
+    has_feature "gateway" && extras+=("gateway")
+    has_feature "cron" && extras+=("cron")
+}
+
+resolve_python_extras() {
+    local extras=()
+
+    if [ "$INSTALL_OPTION" = "default" ] || has_feature "all"; then
+        extras+=("all")
+    else
+        case "$INSTALL_OPTION" in
+            minimal|minimalTUI) extras+=("minimal") ;;
+        esac
+    fi
+
+    append_requested_feature_extras
+
+    if [ "${#extras[@]}" -eq 0 ]; then
+        extras+=("minimal")
+    fi
+    _csv_join_unique "${extras[@]}"
+}
+
+resolve_termux_extra() {
+    local extras=()
+    if [ "$INSTALL_OPTION" = "default" ] || has_feature "all"; then
+        extras+=("termux-all")
+    elif [ "$INSTALL_OPTION" = "minimal" ] || [ "$INSTALL_OPTION" = "minimalTUI" ]; then
+        extras+=("termux-minimal")
+    else
+        extras+=("termux")
+    fi
+
+    append_requested_feature_extras
+
+    _csv_join_unique "${extras[@]}"
+}
+
+should_check_node() {
+    [ "$INSTALL_OPTION" = "default" ] \
+        || [ "$INSTALL_OPTION" = "minimalTUI" ] \
+        || has_feature "browser" \
+        || has_feature "dashboard" \
+        || has_feature "tui" \
+        || has_feature "all"
+}
+
+should_install_browser_node_deps() {
+    [ "$INSTALL_OPTION" = "default" ] \
+        || has_feature "browser" \
+        || has_feature "dashboard" \
+        || has_feature "all"
+}
+
+should_install_tui_node_deps() {
+    [ "$INSTALL_OPTION" = "default" ] \
+        || [ "$INSTALL_OPTION" = "minimalTUI" ] \
+        || has_feature "tui" \
+        || has_feature "all"
+}
+
+should_check_ffmpeg() {
+    [ "$INSTALL_OPTION" = "default" ] \
+        || has_feature "tts" \
+        || has_feature "voice" \
+        || has_feature "all"
+}
+
+should_check_web_network() {
+    [ "$INSTALL_OPTION" = "default" ] \
+        || [ "$INSTALL_OPTION" = "minimal" ] \
+        || [ "$INSTALL_OPTION" = "minimalTUI" ] \
+        || has_feature "web-search" \
+        || has_feature "all"
+}
+
+normalize_github_https_url() {
+    local url="$1"
+    case "$url" in
+        git@github.com:*)
+            printf 'https://github.com/%s\n' "${url#git@github.com:}"
+            ;;
+        ssh://git@github.com/*)
+            printf 'https://github.com/%s\n' "${url#ssh://git@github.com/}"
+            ;;
+        *)
+            printf '%s\n' "$url"
+            ;;
+    esac
+}
+
+set_repo_source() {
+    local repo_url="$1"
+    local source_label="$2"
+    local fallback_url
+
+    REPO_URL_PRIMARY="$repo_url"
+    REPO_URL_DISPLAY="$repo_url"
+    REPO_SOURCE_LABEL="$source_label"
+
+    fallback_url="$(normalize_github_https_url "$repo_url")"
+    if [ "$fallback_url" != "$repo_url" ]; then
+        REPO_URL_FALLBACK="$fallback_url"
+    else
+        REPO_URL_FALLBACK=""
+    fi
+}
+
+detect_installer_repo_root() {
+    local source_path="${BASH_SOURCE[0]:-$0}"
+    local script_dir
+    local candidate
+
+    if [ -z "$source_path" ] || [ ! -f "$source_path" ]; then
+        return 1
+    fi
+
+    case "$source_path" in
+        /*) ;;
+        *) source_path="$PWD/$source_path" ;;
+    esac
+
+    script_dir="$(cd "$(dirname "$source_path")" && pwd -P)" || return 1
+    candidate="$(cd "$script_dir/.." && pwd -P)" || return 1
+
+    if { [ -d "$candidate/.git" ] || [ -f "$candidate/.git" ]; } && [ -f "$candidate/pyproject.toml" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+
+    return 1
+}
+
+configure_repo_source() {
+    local local_root=""
+    local current_branch=""
+    local upstream_ref=""
+    local upstream_branch=""
+    local remote_name=""
+    local remote_url=""
+    local use_local_path=false
+
+    if [ "$REPO_URL_EXPLICIT" = true ]; then
+        set_repo_source "$REPO_URL_OVERRIDE" "explicit --repo"
+        log_info "Installer source: $REPO_SOURCE_LABEL"
+        log_info "Repository: $REPO_URL_DISPLAY"
+        log_info "Branch: $BRANCH"
+        return 0
+    fi
+
+    local_root="$(detect_installer_repo_root 2>/dev/null || true)"
+    if [ -n "$local_root" ] && git -C "$local_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        current_branch="$(git -C "$local_root" branch --show-current 2>/dev/null || true)"
+        upstream_ref="$(git -C "$local_root" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+
+        if [ -n "$upstream_ref" ] && [ "$upstream_ref" != "${upstream_ref#*/}" ]; then
+            upstream_branch="${upstream_ref#*/}"
+            if [ -n "$current_branch" ] && [ "$current_branch" != "$upstream_branch" ] && [ "$BRANCH_EXPLICIT" = false ]; then
+                # A fresh feature worktree often still tracks origin/main until
+                # the feature branch is pushed. Do not silently install main
+                # when the script is being run from that feature checkout;
+                # clone/fetch from the local checkout path instead.
+                BRANCH="$current_branch"
+                use_local_path=true
+            else
+                remote_name="${upstream_ref%%/*}"
+                if [ "$BRANCH_EXPLICIT" = false ]; then
+                    BRANCH="$upstream_branch"
+                fi
+            fi
+        elif [ -n "$current_branch" ]; then
+            remote_name="$(git -C "$local_root" config --get "branch.${current_branch}.remote" 2>/dev/null || true)"
+            if [ "$BRANCH_EXPLICIT" = false ]; then
+                BRANCH="$current_branch"
+            fi
+        fi
+
+        if [ "$use_local_path" = false ]; then
+            if [ -z "$remote_name" ] && git -C "$local_root" remote get-url fork >/dev/null 2>&1; then
+                remote_name="fork"
+            fi
+            if [ -z "$remote_name" ] && git -C "$local_root" remote get-url origin >/dev/null 2>&1; then
+                remote_name="origin"
+            fi
+
+            if [ -n "$remote_name" ]; then
+                remote_url="$(git -C "$local_root" remote get-url "$remote_name" 2>/dev/null || true)"
+            fi
+
+            if [ -n "$remote_url" ]; then
+                set_repo_source "$remote_url" "local checkout ($local_root)"
+                log_info "Installer source: $REPO_SOURCE_LABEL"
+                log_info "Repository: $REPO_URL_DISPLAY"
+                log_info "Branch: $BRANCH"
+                return 0
+            fi
+        fi
+
+        # Last resort for an unpushed or mismatched-upstream local checkout.
+        # This is intentionally local-only and only applies when scripts/install.sh is
+        # executed from inside that checkout; curl/raw installs still use Nous.
+        set_repo_source "$local_root" "local checkout path"
+        log_info "Installer source: $REPO_SOURCE_LABEL"
+        log_info "Repository: $REPO_URL_DISPLAY"
+        log_info "Branch: $BRANCH"
+        return 0
+    fi
+
+    set_repo_source "$REPO_URL_SSH" "upstream default"
+    REPO_URL_FALLBACK="$REPO_URL_HTTPS"
+    REPO_URL_DISPLAY="$REPO_URL_HTTPS"
+    log_info "Installer source: $REPO_SOURCE_LABEL"
+    log_info "Repository: $REPO_URL_DISPLAY"
+    log_info "Branch: $BRANCH"
 }
 
 is_termux() {
@@ -647,11 +1015,14 @@ install_node() {
 }
 
 check_network_prerequisites() {
-    log_info "Checking internet connectivity for package install and web tools..."
+    log_info "Checking internet connectivity for package install..."
 
     local url
     local failed=false
-    local checks=("https://pypi.org/simple/" "https://duckduckgo.com/")
+    local checks=("https://pypi.org/simple/")
+    if should_check_web_network; then
+        checks+=("https://duckduckgo.com/")
+    fi
 
     if ! command -v curl >/dev/null 2>&1; then
         log_warn "curl not found; skipping connectivity probes"
@@ -696,13 +1067,17 @@ install_system_packages() {
         need_ripgrep=true
     fi
 
-    log_info "Checking ffmpeg (TTS voice messages)..."
-    if command -v ffmpeg &> /dev/null; then
-        local ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
-        log_success "ffmpeg $ffmpeg_ver found"
-        HAS_FFMPEG=true
+    if should_check_ffmpeg; then
+        log_info "Checking ffmpeg (TTS voice messages)..."
+        if command -v ffmpeg &> /dev/null; then
+            local ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
+            log_success "ffmpeg $ffmpeg_ver found"
+            HAS_FFMPEG=true
+        else
+            need_ffmpeg=true
+        fi
     else
-        need_ffmpeg=true
+        log_info "Skipping ffmpeg check (not needed for selected install option/features)"
     fi
 
     # Termux always needs the Android build toolchain for the tested pip path,
@@ -893,8 +1268,35 @@ clone_repo() {
                 autostash_ref="stash@{0}"
             fi
 
-            git fetch origin
-            git checkout "$BRANCH"
+            if git remote get-url origin >/dev/null 2>&1; then
+                git remote set-url origin "$REPO_URL_PRIMARY"
+            else
+                git remote add origin "$REPO_URL_PRIMARY"
+            fi
+
+            local fetch_ok=false
+            if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+               git fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"; then
+                fetch_ok=true
+            elif [ -n "$REPO_URL_FALLBACK" ]; then
+                log_warn "Primary fetch failed, trying fallback: $REPO_URL_FALLBACK"
+                git remote set-url origin "$REPO_URL_FALLBACK"
+                if git fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"; then
+                    fetch_ok=true
+                fi
+            fi
+
+            if [ "$fetch_ok" != true ]; then
+                log_error "Failed to fetch branch '$BRANCH' from $REPO_URL_DISPLAY"
+                exit 1
+            fi
+
+            if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+                git checkout "$BRANCH"
+            else
+                git checkout -b "$BRANCH" "origin/$BRANCH"
+            fi
+            git branch --set-upstream-to="origin/$BRANCH" "$BRANCH" >/dev/null 2>&1 || true
             git pull --ff-only origin "$BRANCH"
 
             if [ -n "$autostash_ref" ]; then
@@ -934,22 +1336,23 @@ clone_repo() {
             exit 1
         fi
     else
-        # Try SSH first (for private repo access), fall back to HTTPS
-        # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
-        # so SSH fails fast instead of hanging when no key is configured.
-        log_info "Trying SSH clone..."
+        log_info "Cloning from $REPO_URL_DISPLAY..."
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
-            log_success "Cloned via SSH"
-        else
-            rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
-            log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
-                log_success "Cloned via HTTPS"
+           git clone --branch "$BRANCH" "$REPO_URL_PRIMARY" "$INSTALL_DIR" 2>/dev/null; then
+            log_success "Cloned repository"
+        elif [ -n "$REPO_URL_FALLBACK" ]; then
+            rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial primary clone
+            log_warn "Primary clone failed, trying fallback: $REPO_URL_FALLBACK"
+            if git clone --branch "$BRANCH" "$REPO_URL_FALLBACK" "$INSTALL_DIR"; then
+                log_success "Cloned repository via fallback"
             else
                 log_error "Failed to clone repository"
                 exit 1
             fi
+        else
+            rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial clone
+            log_error "Failed to clone repository"
+            exit 1
         fi
     fi
 
@@ -961,6 +1364,11 @@ clone_repo() {
 setup_venv() {
     if [ "$USE_VENV" = false ]; then
         log_info "Skipping virtual environment (--no-venv)"
+        return 0
+    fi
+
+    if [ "$ADDITIVE_INSTALL" = true ] && [ -x "venv/bin/python" ]; then
+        log_info "Reusing existing virtual environment (--additive)"
         return 0
     fi
 
@@ -1025,16 +1433,25 @@ install_deps() {
             fi
         fi
 
-        # Try the broad Termux profile first (best-effort "install all" for Android),
-        # then fall back to the conservative Termux baseline, then base package.
-        if ! "$PIP_PYTHON" -m pip install -e '.[termux-all]' -c constraints-termux.txt; then
-            log_warn "Termux broad profile (.[termux-all]) failed, trying baseline Termux profile..."
-            if ! "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt; then
+        local termux_extra
+        termux_extra="$(resolve_termux_extra)"
+        log_info "Installing Termux Python extra: .[$termux_extra]"
+        if ! "$PIP_PYTHON" -m pip install -e ".[${termux_extra}]" -c constraints-termux.txt; then
+            if [ "$termux_extra" != "termux" ]; then
+                log_warn "Termux extra (.[${termux_extra}]) failed, trying baseline Termux profile..."
+                if ! "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt; then
+                    log_warn "Termux baseline profile (.[termux]) failed, trying base install..."
+                    if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
+                        log_error "Package installation failed on Termux."
+                        log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl ca-certificates curl"
+                        log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux]' -c constraints-termux.txt"
+                        exit 1
+                    fi
+                fi
+            else
                 log_warn "Termux baseline profile (.[termux]) failed, trying base install..."
                 if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
                     log_error "Package installation failed on Termux."
-                    log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl ca-certificates curl"
-                    log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
                     exit 1
                 fi
             fi
@@ -1086,44 +1503,56 @@ install_deps() {
         fi
     fi
 
-    # Install the main package in editable mode with all extras.
-    #
+    # Install the main package in editable mode with the selected extras.
+    local extras
+    extras="$(resolve_python_extras)"
+    local install_target=".[${extras}]"
+    log_info "Python extras selected: ${extras}"
+
+    if [ "$ADDITIVE_INSTALL" = true ]; then
+        log_info "Adding Python extras without pruning existing packages: $install_target"
+        if $UV_CMD pip install -e "$install_target"; then
+            log_success "Feature dependencies installed additively ($install_target)"
+            log_success "All dependencies installed"
+            return 0
+        fi
+        log_error "Package installation failed for $install_target."
+        exit 1
+    fi
+
     # Hash-verified install (Tier 0) — when uv.lock is present, prefer
     # `uv sync --locked`. The lockfile records SHA256 hashes for every
     # transitive, so a compromised transitive (different hash than what
-    # we shipped) is REJECTED by the resolver. This is the *only* path
-    # that protects against the "direct dep is fine, but the dep's dep
-    # got worm-poisoned overnight" failure mode. All `uv pip install`
-    # tiers below re-resolve transitives fresh from PyPI without any
-    # hash verification — they exist to keep installs working when the
-    # lockfile is stale, missing, or out-of-sync with the current
-    # extras spec, NOT because they're equivalent in posture.
+    # we shipped) is REJECTED by the resolver.
     if [ -f "uv.lock" ]; then
         log_info "Trying tier: hash-verified (uv.lock) ..."
-        log_info "(this resolves + downloads the curated [all] set — first run on a"
-        log_info " fresh venv can take 1-5 minutes; uv prints progress below)"
+        local sync_ok=false
         # Stream uv's progress directly to the user instead of swallowing
-        # it with `2>"$(mktemp)"`.  Two reasons:
-        #   1. `--extra all --locked` against a fresh venv has to pull
-        #      every transitive — silencing stderr makes the install
-        #      look frozen for minutes on slow networks. Users see
-        #      "Trying tier: hash-verified ..." and assume it's hung.
-        #   2. The previous `2>"$(mktemp)"` substituted the path at
-        #      command-build time but never saved it, so on failure the
-        #      uv error message was unreachable — the user just got the
-        #      generic "lockfile may be stale" warning.
-        #
-        # Critical flag choice: `--extra all`, NOT `--all-extras`.
-        #   --all-extras = every [project.optional-dependencies] key.
-        #                  This bypasses the curated `[all]` extra
-        #                  entirely and pulls e.g. [matrix] (which
-        #                  needs python-olm + make on Windows) and
-        #                  [rl] (git+https deps that fail offline).
-        #   --extra all  = install just the `[all]` extra's contents.
-        #                  This respects the curation in pyproject.toml.
-        # uv's own progress UI handles TTY detection and downgrades
-        # gracefully when stdout/stderr aren't terminals.
-        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
+        # it with `2>"$(mktemp)"`; installs can legitimately take minutes,
+        # and hidden stderr made stale lockfile / resolver failures opaque.
+        if [ "$extras" = "all" ]; then
+            log_info "(this resolves + downloads the curated [all] set — first run on a"
+            log_info " fresh venv can take 1-5 minutes; uv prints progress below)"
+            # Critical flag choice: `--extra all`, NOT `--all-extras`.
+            #   --all-extras = every [project.optional-dependencies] key.
+            #                  This bypasses the curated `[all]` extra entirely.
+            #   --extra all  = install just the `[all]` extra's contents.
+            if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
+                sync_ok=true
+            fi
+        else
+            local uv_extra_args=()
+            local _extra
+            IFS=',' read -r -a _selected_extras <<< "$extras"
+            for _extra in "${_selected_extras[@]}"; do
+                uv_extra_args+=(--extra "$_extra")
+            done
+            log_info "(this resolves + downloads selected extras: ${extras}; uv prints progress below)"
+            if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --locked "${uv_extra_args[@]}"; then
+                sync_ok=true
+            fi
+        fi
+        if [ "$sync_ok" = true ]; then
             log_success "Main package installed (hash-verified via uv.lock)"
             log_success "All dependencies installed"
             return 0
@@ -1131,6 +1560,17 @@ install_deps() {
         log_warn "uv.lock sync failed (see uv output above), falling back to PyPI resolve..."
     else
         log_info "uv.lock not found — falling back to PyPI resolve (no hash verification)"
+    fi
+
+    if [ "$extras" != "all" ]; then
+        log_info "Trying selected install target: $install_target ..."
+        if $UV_CMD pip install -e "$install_target"; then
+            log_success "Main package installed ($install_target)"
+            log_success "All dependencies installed"
+            return 0
+        fi
+        log_error "Package installation failed for $install_target."
+        exit 1
     fi
 
     # Multi-tier fallback. The point of the tiers is that ONE compromised
@@ -1264,7 +1704,7 @@ setup_path() {
         log_warn "hermes entry point not found at $HERMES_BIN"
         log_info "This usually means the pip install didn't complete successfully."
         if [ "$DISTRO" = "termux" ]; then
-            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
+            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[$(resolve_termux_extra)]' -c constraints-termux.txt"
         else
             log_info "Try: cd $INSTALL_DIR && uv pip install -e '.[all]'"
         fi
@@ -1426,6 +1866,7 @@ copy_config_templates() {
     if [ ! -f "$HERMES_HOME/config.yaml" ]; then
         if [ -f "$INSTALL_DIR/cli-config.yaml.example" ]; then
             cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
+            CONFIG_CREATED=true
             log_success "Created ~/.hermes/config.yaml from template"
         fi
     else
@@ -1482,7 +1923,7 @@ install_node_deps() {
         return 0
     fi
 
-    if [ -f "$INSTALL_DIR/package.json" ]; then
+    if should_install_browser_node_deps && [ -f "$INSTALL_DIR/package.json" ]; then
         log_info "Installing Node.js dependencies (browser tools)..."
         cd "$INSTALL_DIR"
         npm install --silent 2>/dev/null || {
@@ -1547,10 +1988,12 @@ install_node_deps() {
                 ;;
         esac
         log_success "Browser engine setup complete"
+    else
+        log_info "Skipping Node.js dependencies (browser/dashboard features not selected)"
     fi
 
     # Install TUI dependencies
-    if [ -f "$INSTALL_DIR/ui-tui/package.json" ]; then
+    if should_install_tui_node_deps && [ -f "$INSTALL_DIR/ui-tui/package.json" ]; then
         log_info "Installing TUI dependencies..."
         cd "$INSTALL_DIR/ui-tui"
         npm install --silent 2>/dev/null || {
@@ -1568,6 +2011,11 @@ run_setup_wizard() {
         return 0
     fi
 
+    local setup_args=(setup)
+    if [ "$INSTALL_OPTION_EXPLICIT" = true ] || [ "$CONFIG_CREATED" = true ]; then
+        setup_args+=(--install-option "$INSTALL_OPTION")
+    fi
+
     # The setup wizard reads from /dev/tty, so it works even when the
     # install script itself is piped (curl | bash). Only skip if no
     # terminal is available at all (e.g. Docker build, CI).
@@ -1578,6 +2026,12 @@ run_setup_wizard() {
     # then crash on `< /dev/tty` below.
     if ! (: </dev/tty) 2>/dev/null; then
         log_info "Setup wizard skipped (no terminal available). Run 'hermes setup' after install."
+        cd "$INSTALL_DIR"
+        if [ "$USE_VENV" = true ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+            "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main "${setup_args[@]}" --non-interactive >/dev/null 2>&1 || true
+        else
+            python -m hermes_cli.main "${setup_args[@]}" --non-interactive >/dev/null 2>&1 || true
+        fi
         return 0
     fi
 
@@ -1590,9 +2044,9 @@ run_setup_wizard() {
     # Run hermes setup using the venv Python directly (no activation needed).
     # Redirect stdin from /dev/tty so interactive prompts work when piped from curl.
     if [ "$USE_VENV" = true ]; then
-        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup < /dev/tty
+        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main "${setup_args[@]}" < /dev/tty
     else
-        python -m hermes_cli.main setup < /dev/tty
+        python -m hermes_cli.main "${setup_args[@]}" < /dev/tty
     fi
 }
 
@@ -1747,8 +2201,8 @@ print_success() {
         echo ""
     fi
 
-    # Show Node.js warning if auto-install failed
-    if [ "$HAS_NODE" = false ]; then
+    # Show Node.js warning if auto-install failed for a selected Node-backed feature.
+    if should_check_node && [ "$HAS_NODE" = false ]; then
         echo -e "${YELLOW}"
         echo "Note: Node.js could not be installed automatically."
         echo "Browser tools need Node.js. Install manually:"
@@ -1782,11 +2236,27 @@ main() {
     print_banner
 
     detect_os
+    if [ "$INSTALL_OPTION_EXPLICIT" = false ] && _has_any_extra_feature; then
+        if has_feature "all"; then
+            INSTALL_OPTION="default"
+        elif has_feature "tui"; then
+            INSTALL_OPTION="minimalTUI"
+        else
+            INSTALL_OPTION="minimal"
+        fi
+    fi
+    INSTALL_OPTION="$(normalize_install_option "$INSTALL_OPTION")"
     resolve_install_layout
     install_uv
     check_python
     check_git
-    check_node
+    configure_repo_source
+    if should_check_node; then
+        check_node
+    else
+        HAS_NODE=false
+        log_info "Skipping Node.js check (not needed for selected install option/features)"
+    fi
     check_network_prerequisites
     install_system_packages
 

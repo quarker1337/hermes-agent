@@ -9058,6 +9058,58 @@ def _report_dashboard_status() -> int:
     return len(pids)
 
 
+def cmd_install_feature(args):
+    """Install optional Hermes feature extras after a minimal install."""
+    feature = getattr(args, "feature", "")
+    public_valid = {
+        "browser", "tts", "voice", "dashboard", "tui", "gateway",
+        "web-search", "image-gen", "cron", "full", "all",
+    }
+    aliases = {"web": "dashboard"}
+    if feature in aliases:
+        print("Feature 'web' is deprecated; installing 'dashboard' instead.")
+        feature = aliases[feature]
+    if feature not in public_valid:
+        print(f"Unknown feature: {feature}")
+        print("Valid features: " + ", ".join(sorted(public_valid)))
+        sys.exit(1)
+
+    install_script = PROJECT_ROOT / "scripts" / "install.sh"
+    if install_script.exists():
+        cmd = [str(install_script), "--skip-setup", "--additive"]
+        if feature in {"full", "all"}:
+            cmd.append("--full")
+        else:
+            cmd.extend(["--with", feature])
+        print("Running: " + " ".join(cmd))
+        raise SystemExit(subprocess.call(cmd))
+
+    extra_map = {
+        "dashboard": "dashboard",
+        "web-search": "web-search",
+        "image-gen": "image-gen",
+        "browser": "browser",
+        "tts": "tts",
+        "voice": "voice",
+        "gateway": "gateway",
+        "cron": "cron",
+        "full": "all",
+        "all": "all",
+    }
+    extra = extra_map.get(feature)
+    if not extra:
+        print(f"Feature '{feature}' needs the source checkout installer for Node/browser/TUI setup.")
+        print("Run from a Hermes checkout:")
+        print(f"  scripts/install.sh --with {feature}")
+        sys.exit(1)
+
+    target = f"hermes-agent[{extra}]"
+    if (PROJECT_ROOT / "pyproject.toml").exists():
+        target = f".[{extra}]"
+    cmd = [sys.executable, "-m", "pip", "install", target]
+    print("Running: " + " ".join(cmd))
+    raise SystemExit(subprocess.call(cmd, cwd=str(PROJECT_ROOT)))
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     # --status: report running dashboards and exit, no deps needed.
@@ -9082,13 +9134,11 @@ def cmd_dashboard(args):
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
     except ImportError as e:
-        print("Web UI dependencies not installed (need fastapi + uvicorn).")
-        print(
-            f"Re-install the package into this interpreter so metadata updates apply:\n"
-            f"  cd {PROJECT_ROOT}\n"
-            f"  {sys.executable} -m pip install -e .\n"
-            "If `pip` is missing in this venv, use:  uv pip install -e ."
-        )
+        print("Dashboard dependencies are not installed.")
+        print("Install them with:")
+        print("  hermes install-feature dashboard")
+        print("or:")
+        print("  pip install 'hermes-agent[dashboard]'")
         print(f"Import error: {e}")
         sys.exit(1)
 
@@ -9188,7 +9238,8 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "kanban", "login", "logout", "logs", "mcp", "memory", "model",
+        "install-feature", "kanban", "login", "logout", "logs", "mcp",
+        "memory", "model",
         "pairing", "plugins", "profile", "sessions", "setup", "skills",
         "slack", "status", "tools", "uninstall", "update", "version",
         "webhook", "whatsapp", "chat",
@@ -9347,6 +9398,21 @@ def main():
         help="Disable TLS verification for Nous login (testing only)",
     )
     model_parser.set_defaults(func=cmd_model)
+
+    # =========================================================================
+    # install-feature command — opt into optional extras after minimal install
+    # =========================================================================
+    install_feature_parser = subparsers.add_parser(
+        "install-feature",
+        help="Install optional feature extras after a minimal install",
+        description="Install browser, TUI, dashboard, voice/TTS, gateway, or full extras after a minimal install",
+    )
+    install_feature_parser.add_argument(
+        "feature",
+        metavar="FEATURE",
+        help="Feature to install: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, full, all",
+    )
+    install_feature_parser.set_defaults(func=cmd_install_feature)
 
     # =========================================================================
     # fallback command — manage the fallback provider chain
@@ -9580,6 +9646,25 @@ def main():
         action="store_true",
         help="On existing installs: only prompt for items that are missing "
         "or unset, instead of running the full reconfigure wizard.",
+    )
+    setup_parser.add_argument(
+        "--install-option",
+        choices=["minimal", "minimalTUI", "minimal-tui", "default", "full"],
+        default=None,
+        help="Installer/setup dependency option. Default is the full install; 'minimal' enables the compact toolset, 'minimalTUI' also installs TUI deps.",
+    )
+    setup_parser.add_argument(
+        "--minimal",
+        dest="setup_minimal",
+        action="store_true",
+        help="Alias for --install-option minimal.",
+    )
+    setup_parser.add_argument(
+        "--minimal-tui",
+        "--minimalTUI",
+        dest="setup_minimal_tui",
+        action="store_true",
+        help="Alias for --install-option minimalTUI.",
     )
     setup_parser.set_defaults(func=cmd_setup)
 

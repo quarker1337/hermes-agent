@@ -2615,6 +2615,74 @@ def setup_tools(config: dict, first_install: bool = False):
     tools_command(first_install=first_install, config=config)
 
 
+
+_MINIMAL_INSTALL_TOOLSETS = [
+    "skills",
+    "file",
+    "terminal",
+    "todo",
+    "memory",
+    "session_search",
+    "clarify",
+    "web",
+]
+
+
+def _normalize_install_option(requested_option: str | None) -> str | None:
+    """Return the canonical installer dependency option name."""
+    if not requested_option:
+        return None
+    raw = str(requested_option).strip()
+    key = raw.replace("_", "-").lower()
+    aliases = {
+        "full": "default",
+        "default": "default",
+        "minimal": "minimal",
+        "standard": "minimal",  # transitional backcompat alias
+        "minimaltui": "minimalTUI",
+        "minimal-tui": "minimalTUI",
+    }
+    return aliases.get(key, raw)
+
+
+def _apply_install_option_defaults(config: dict, requested_option: str) -> None:
+    """Persist install-option-specific defaults without choosing setup sections."""
+    requested_option = _normalize_install_option(requested_option)
+    if requested_option not in {"minimal", "minimalTUI", "default"}:
+        raise ValueError(f"Unknown install option: {requested_option}")
+
+    config["install_option"] = requested_option
+    kanban_cfg = config.setdefault("kanban", {})
+    if requested_option in {"minimal", "minimalTUI"}:
+        config["toolsets"] = list(_MINIMAL_INSTALL_TOOLSETS)
+        config.setdefault("platform_toolsets", {})["cli"] = list(_MINIMAL_INSTALL_TOOLSETS)
+        if isinstance(kanban_cfg, dict):
+            kanban_cfg["dispatch_in_gateway"] = False
+    elif requested_option == "default":
+        config["toolsets"] = ["hermes-cli"]
+        config.setdefault("platform_toolsets", {})["cli"] = ["hermes-cli"]
+        if isinstance(kanban_cfg, dict):
+            kanban_cfg["dispatch_in_gateway"] = True
+
+
+def _offer_tool_configuration(
+    config: dict,
+    *,
+    first_install: bool,
+    default: bool = False,
+) -> None:
+    """Offer tool configuration without changing dependency install options."""
+    print()
+    print_header("Tools")
+    print_info(
+        "Install options choose dependencies and safe defaults; tool choices remain configurable."
+    )
+    print_info("You can add missing feature dependencies later with 'hermes install-feature <name>'.")
+    if prompt_yes_no("Configure CLI tools now?", default):
+        setup_tools(config, first_install=first_install)
+    else:
+        print_info("Skipped. Configure later with: hermes setup tools")
+
 # =============================================================================
 # Post-Migration Section Skip Logic
 # =============================================================================
@@ -3071,7 +3139,19 @@ def run_setup_wizard(args):
     else:
         _backup_path = None
 
-    # Detect non-interactive environments (headless SSH, Docker, CI/CD)
+    requested_option = _normalize_install_option(getattr(args, "install_option", None))
+    if getattr(args, "setup_minimal", False):
+        requested_option = "minimal"
+    if getattr(args, "setup_minimal_tui", False):
+        requested_option = "minimalTUI"
+
+    if requested_option:
+        _apply_install_option_defaults(config, requested_option)
+        save_config(config)
+
+    # Detect non-interactive environments (headless SSH, Docker, CI/CD). Apply
+    # install-option defaults before this return so installer-driven headless
+    # setup still records the selected dependency/toolset baseline.
     non_interactive = getattr(args, 'non_interactive', False)
     if not non_interactive and not is_interactive_stdin():
         non_interactive = True
@@ -3109,6 +3189,26 @@ def run_setup_wizard(args):
 
         print_error(f"Unknown setup section: {section}")
         print_info(f"Available sections: {', '.join(k for k, _, _ in SETUP_SECTIONS)}")
+        return
+
+    if requested_option in {"minimal", "minimalTUI"}:
+        print()
+        if requested_option == "minimalTUI":
+            print_header("Minimal TUI Setup")
+            print_info("Configuring the provider and model required for Hermes chat with TUI dependencies installed.")
+        else:
+            print_header("Minimal Setup")
+            print_info("Configuring the provider and model required for classic CLI chat.")
+        print_info(
+            "Compact defaults enable the skills, file, terminal, todo, memory, "
+            "session_search, clarify, and web toolsets; tool configuration is optional."
+        )
+        setup_model_provider(config, quick=True)
+        save_config(config)
+        _offer_tool_configuration(config, first_install=True, default=False)
+        save_config(config)
+        _print_setup_summary(config, hermes_home)
+        _offer_launch_chat()
         return
 
     # Check if this is an existing installation with a provider configured

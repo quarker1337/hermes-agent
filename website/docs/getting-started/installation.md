@@ -40,6 +40,31 @@ The installer also sets `HERMES_GIT_BASH_PATH` to the located `bash.exe` so Herm
 
 If you prefer WSL2, the Linux installer above works inside it; both native and WSL installs can coexist without conflict (native data lives under `%LOCALAPPDATA%\hermes`, WSL data lives under `~/.hermes`).
 
+### Install options
+
+The one-liner above installs the default/full feature set. For smaller POSIX installs, pass an explicit install option:
+
+```bash
+# Compact classic CLI baseline: skills, file, terminal, todo, memory,
+# session_search, clarify, and web-search tools.
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --minimal
+
+# Same compact baseline plus TUI dependencies.
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --minimal-tui
+```
+
+You can also add one-off optional features without taking the whole default set:
+
+```bash
+# Minimal baseline plus dashboard backend deps
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --with dashboard
+
+# Add later after an existing minimal install
+hermes install-feature dashboard
+```
+
+Public feature names include `dashboard`, `browser`, `tts`, `voice`, `gateway`, `web-search`, `image-gen`, `tui`, `cron`, and `all`. `web-search` is the research/extraction tool dependency set; `dashboard` is the local web UI/API backend. The old `web` name is accepted only as a hidden backwards-compatible alias for `dashboard`.
+
 ### Android / Termux
 
 Hermes now ships a Termux-aware installer path too:
@@ -52,8 +77,9 @@ The installer detects Termux automatically and switches to a tested Android flow
 - uses Termux `pkg` for system dependencies (`git`, `python`, `nodejs`, `ripgrep`, `ffmpeg`, build tools)
 - creates the virtualenv with `python -m venv`
 - exports `ANDROID_API_LEVEL` automatically for Android wheel builds
-- prefers the broad `.[termux-all]` extra and falls back to the smaller `.[termux]` extra (and finally a base install) if the first attempt fails to compile
-- skips the untested browser / WhatsApp bootstrap by default
+- default/full prefers the curated `.[termux-all]` extra and falls back to the smaller `.[termux]` extra (and finally a base install) if the first attempt fails to compile
+- explicit `--minimal` / `--minimal-tui` uses `.[termux-minimal]`
+- skips automatic browser, WhatsApp, and Node/TUI bootstrap on Termux; install/experiment with Node packages manually if you need those paths
 
 If you want the fully explicit path, follow the dedicated [Termux guide](./termux.md).
 
@@ -72,7 +98,7 @@ Set `HERMES_DISABLE_WINDOWS_UTF8=1` in your environment if you hit an encoding-r
 
 ### What the Installer Does
 
-The installer handles everything automatically — all dependencies (Python, Node.js, ripgrep, ffmpeg), the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. By the end, you're ready to chat.
+The default installer handles the full dependency set automatically — Python, Node.js/browser/TUI dependencies, ripgrep, ffmpeg, the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. Explicit compact options such as `--minimal` intentionally skip heavy optional checks and install only the selected baseline/features. By the end, you're ready to chat with the install option you chose.
 
 #### Install Layout
 

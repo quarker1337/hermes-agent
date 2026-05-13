@@ -8,24 +8,22 @@ description: "Run Hermes Agent directly on an Android phone with Termux"
 
 This is the tested path for running Hermes Agent directly on an Android phone through [Termux](https://termux.dev/).
 
-It gives you a working local CLI on the phone, plus the core extras that are currently known to install cleanly on Android.
+It gives you a working local CLI on the phone, plus Android-compatible dependency bundles for each installer option.
 
 ## What is supported in the tested path?
 
-The tested Termux bundle installs:
+The default/full Termux bundle (`.[termux-all]`) installs the broadest Android-compatible set we currently test, including:
 - the Hermes CLI
 - cron support
 - PTY/background terminal support
-- Telegram gateway support (manual / best-effort background runs)
+- Telegram/gateway support (manual / best-effort background runs)
 - MCP support
 - Honcho memory support
 - ACP support
+- dashboard backend deps
+- additional messaging/platform SDKs that resolve cleanly on Android
 
-Concretely, it maps to:
-
-```bash
-python -m pip install -e '.[termux]' -c constraints-termux.txt
-```
+Explicit compact installs use `.[termux-minimal]`, which keeps the CLI, web-search baseline, PTY support, and Telegram gateway support without taking the whole default bundle. The older `.[termux]` bundle remains available as a conservative fallback when broader Android extras fail to compile.
 
 ## What is not part of the tested path yet?
 
@@ -52,9 +50,11 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 On Termux, the installer automatically:
 - uses `pkg` for system packages
 - creates the venv with `python -m venv`
-- attempts the broad `.[termux-all]` extra first and falls back to the smaller `.[termux]` extra (then a base install) — the curl installer matches this order automatically
+- default/full attempts the broad `.[termux-all]` extra first and falls back to the smaller `.[termux]` extra (then a base install) — the curl installer matches this order automatically
+- explicit `--minimal` / `--minimal-tui` selects `.[termux-minimal]`
+- explicit `--with FEATURE` layers compatible Python feature extras onto the selected Termux bundle (for example `--minimal --with dashboard` installs `.[termux-minimal,dashboard]`)
 - links `hermes` into `$PREFIX/bin` so it stays on your Termux PATH
-- skips the untested browser / WhatsApp bootstrap
+- skips automatic browser, WhatsApp, and Node/TUI bootstrap on Termux; install/experiment with Node packages manually if you need those paths
 
 If you want the explicit commands or need to debug a failed install, use the manual path below.
 
@@ -103,14 +103,22 @@ python -m pip install --upgrade pip setuptools wheel
 
 ### 4. Install the tested Termux bundle
 
+For the broad default/full Termux install, use the curated Android-compatible bundle:
+
 ```bash
-python -m pip install -e '.[termux]' -c constraints-termux.txt
+python -m pip install -e '.[termux-all]' -c constraints-termux.txt
 ```
 
-If you only want the minimal core agent, this also works:
+If you want the compact minimal install option instead, use:
 
 ```bash
-python -m pip install -e '.' -c constraints-termux.txt
+python -m pip install -e '.[termux-minimal]' -c constraints-termux.txt
+```
+
+The conservative baseline bundle remains available as a fallback:
+
+```bash
+python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
 
 ### 5. Put `hermes` on your Termux PATH
@@ -171,7 +179,13 @@ Treat browser / WhatsApp tooling on Android as experimental until documented oth
 
 ### `No solution found` when installing `.[all]`
 
-Use the tested Termux bundle instead:
+Use the curated Termux bundle instead:
+
+```bash
+python -m pip install -e '.[termux-all]' -c constraints-termux.txt
+```
+
+If you still hit resolver/build failures, fall back to the conservative baseline:
 
 ```bash
 python -m pip install -e '.[termux]' -c constraints-termux.txt
@@ -232,7 +246,7 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 - Docker backend is unavailable
 - local voice transcription via `faster-whisper` is unavailable in the tested path
 - browser automation setup is intentionally skipped by the installer
-- some optional extras may work, but only `.[termux]` and `.[termux-all]` are currently documented as the tested Android bundles
+- some optional extras may work, but only `.[termux-minimal]`, `.[termux]`, and `.[termux-all]` are currently documented as the tested Android bundles
 
 If you hit a new Android-specific issue, please open a GitHub issue with:
 - your Android version

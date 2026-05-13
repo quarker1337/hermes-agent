@@ -2002,11 +2002,18 @@ anthropic = [
 bedrock = [
     { name = "boto3" },
 ]
+browser = [
+    { name = "websockets" },
+]
 cli = [
     { name = "simple-term-menu" },
 ]
 computer-use = [
     { name = "mcp" },
+]
+dashboard = [
+    { name = "fastapi" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 daytona = [
     { name = "daytona" },
@@ -2042,6 +2049,14 @@ feishu = [
 firecrawl = [
     { name = "firecrawl-py" },
 ]
+gateway = [
+    { name = "aiohttp" },
+    { name = "discord-py", extra = ["voice"] },
+    { name = "python-telegram-bot", extra = ["webhooks"] },
+    { name = "qrcode" },
+    { name = "slack-bolt" },
+    { name = "slack-sdk" },
+]
 google = [
     { name = "google-api-python-client" },
     { name = "google-auth-httplib2" },
@@ -2055,6 +2070,9 @@ homeassistant = [
 ]
 honcho = [
     { name = "honcho-ai" },
+]
+image-gen = [
+    { name = "fal-client" },
 ]
 matrix = [
     { name = "aiohttp-socks" },
@@ -2073,6 +2091,12 @@ messaging = [
     { name = "qrcode" },
     { name = "slack-bolt" },
     { name = "slack-sdk" },
+]
+minimal = [
+    { name = "exa-py" },
+    { name = "firecrawl-py" },
+    { name = "parallel-web" },
+    { name = "simple-term-menu" },
 ]
 modal = [
     { name = "modal" },
@@ -2098,6 +2122,12 @@ slack = [
 sms = [
     { name = "aiohttp" },
 ]
+standard = [
+    { name = "exa-py" },
+    { name = "firecrawl-py" },
+    { name = "parallel-web" },
+    { name = "simple-term-menu" },
+]
 termux = [
     { name = "agent-client-protocol" },
     { name = "honcho-ai" },
@@ -2122,6 +2152,18 @@ termux-all = [
     { name = "simple-term-menu" },
     { name = "uvicorn", extra = ["standard"] },
 ]
+termux-minimal = [
+    { name = "exa-py" },
+    { name = "firecrawl-py" },
+    { name = "parallel-web" },
+    { name = "ptyprocess", marker = "sys_platform != 'win32'" },
+    { name = "python-telegram-bot", extra = ["webhooks"] },
+    { name = "pywinpty", marker = "sys_platform == 'win32'" },
+    { name = "simple-term-menu" },
+]
+tts = [
+    { name = "edge-tts" },
+]
 tts-premium = [
     { name = "elevenlabs" },
 ]
@@ -2136,6 +2178,11 @@ voice = [
 web = [
     { name = "fastapi" },
     { name = "uvicorn", extra = ["standard"] },
+]
+web-search = [
+    { name = "exa-py" },
+    { name = "firecrawl-py" },
+    { name = "parallel-web" },
 ]
 yc-bench = [
     { name = "yc-bench", marker = "python_full_version >= '3.12'" },
@@ -2177,10 +2224,17 @@ requires-dist = [
     { name = "hermes-agent", extras = ["acp"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["acp"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["cli"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["cli"], marker = "extra == 'minimal'" },
     { name = "hermes-agent", extras = ["cli"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["cron"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["cron"], marker = "extra == 'termux'" },
+    { name = "hermes-agent", extras = ["dashboard"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["dashboard"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["dev"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["edge-tts"], marker = "extra == 'tts'" },
+    { name = "hermes-agent", extras = ["exa"], marker = "extra == 'web-search'" },
+    { name = "hermes-agent", extras = ["fal"], marker = "extra == 'image-gen'" },
+    { name = "hermes-agent", extras = ["firecrawl"], marker = "extra == 'web-search'" },
     { name = "hermes-agent", extras = ["google"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["google"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["homeassistant"], marker = "extra == 'all'" },
@@ -2188,13 +2242,18 @@ requires-dist = [
     { name = "hermes-agent", extras = ["honcho"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'termux'" },
+    { name = "hermes-agent", extras = ["messaging"], marker = "extra == 'gateway'" },
+    { name = "hermes-agent", extras = ["minimal"], marker = "extra == 'standard'" },
+    { name = "hermes-agent", extras = ["minimal"], marker = "extra == 'termux-minimal'" },
+    { name = "hermes-agent", extras = ["parallel-web"], marker = "extra == 'web-search'" },
     { name = "hermes-agent", extras = ["pty"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["pty"], marker = "extra == 'termux'" },
+    { name = "hermes-agent", extras = ["pty"], marker = "extra == 'termux-minimal'" },
     { name = "hermes-agent", extras = ["sms"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["sms"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["termux"], marker = "extra == 'termux-all'" },
-    { name = "hermes-agent", extras = ["web"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
+    { name = "hermes-agent", extras = ["web"], marker = "extra == 'dashboard'" },
+    { name = "hermes-agent", extras = ["web-search"], marker = "extra == 'minimal'" },
     { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
     { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.6.1" },
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.0.1" },
@@ -2222,6 +2281,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = "==1.2.1" },
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'messaging'", specifier = "==22.6" },
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'termux'", specifier = "==22.6" },
+    { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'termux-minimal'", specifier = "==22.6" },
     { name = "pywinpty", marker = "sys_platform == 'win32' and extra == 'pty'", specifier = "==2.0.15" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "qrcode", marker = "extra == 'dingtalk'", specifier = "==7.4.2" },
@@ -2245,10 +2305,11 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = "==0.41.0" },
     { name = "vercel", marker = "extra == 'vercel'", specifier = "==0.5.7" },
     { name = "wandb", marker = "extra == 'rl'", specifier = "==0.25.1" },
+    { name = "websockets", marker = "extra == 'browser'", specifier = "==15.0.1" },
     { name = "yc-bench", marker = "python_full_version >= '3.12' and extra == 'yc-bench'", git = "https://github.com/collinear-ai/yc-bench.git?rev=bfb0c88062450f46341bd9a5298903fc2e952a5c" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "bedrock", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "rl", "yc-bench", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "web-search", "fal", "image-gen", "browser", "edge-tts", "tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "gateway", "cron", "slack", "matrix", "cli", "minimal", "standard", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "bedrock", "termux-minimal", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "dashboard", "rl", "yc-bench", "all"]
 
 [[package]]
 name = "hf-transfer"

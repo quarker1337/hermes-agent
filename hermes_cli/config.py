@@ -439,6 +439,7 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    "install_option": "default",
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
