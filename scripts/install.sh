@@ -43,8 +43,17 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
-REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+DEFAULT_REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
+DEFAULT_REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+REPO_URL_PRIMARY="$DEFAULT_REPO_URL_SSH"
+REPO_URL_FALLBACK="$DEFAULT_REPO_URL_HTTPS"
+REPO_URL_DISPLAY="$DEFAULT_REPO_URL_HTTPS"
+REPO_SOURCE_LABEL="upstream default"
+REPO_URL_OVERRIDE="${HERMES_INSTALL_REPO:-}"
+REPO_URL_EXPLICIT=false
+if [ -n "$REPO_URL_OVERRIDE" ]; then
+    REPO_URL_EXPLICIT=true
+fi
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an
@@ -69,6 +78,7 @@ ROOT_FHS_LAYOUT=false
 USE_VENV=true
 RUN_SETUP=true
 BRANCH="main"
+BRANCH_EXPLICIT=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -92,6 +102,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --branch)
             BRANCH="$2"
+            BRANCH_EXPLICIT=true
+            shift 2
+            ;;
+        --repo)
+            REPO_URL_OVERRIDE="$2"
+            REPO_URL_EXPLICIT=true
             shift 2
             ;;
         --dir)
@@ -111,7 +127,10 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
-            echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --branch NAME  Git branch to install (default: main, or current branch when run from a checkout)"
+            echo "  --repo URL|PATH  Git repository to install from"
+            echo "                   default: local checkout's tracked remote when run from a checkout,"
+            echo "                   otherwise https://github.com/NousResearch/hermes-agent.git"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -126,6 +145,9 @@ while [[ $# -gt 0 ]]; do
             echo "  (default /root/.hermes).  This keeps Docker bind-mounted volumes"
             echo "  small and ensures the command is on PATH for all shells."
             echo "  Existing installs at \$HERMES_HOME/hermes-agent are preserved in-place."
+            echo "  For pre-merge testing, run scripts/install.sh directly from a feature"
+            echo "  checkout; the installer will use that checkout's tracked remote/branch."
+            echo "  Use --repo and --branch to force a specific fork, URL, or local path."
             exit 0
             ;;
         *)
@@ -201,6 +223,132 @@ prompt_yes_no() {
         [yY]|[yY][eE][sS]) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+normalize_github_https_url() {
+    local url="$1"
+    case "$url" in
+        git@github.com:*)
+            printf 'https://github.com/%s\n' "${url#git@github.com:}"
+            ;;
+        ssh://git@github.com/*)
+            printf 'https://github.com/%s\n' "${url#ssh://git@github.com/}"
+            ;;
+        *)
+            printf '%s\n' "$url"
+            ;;
+    esac
+}
+
+set_repo_source() {
+    local repo_url="$1"
+    local source_label="$2"
+    local fallback_url
+
+    REPO_URL_PRIMARY="$repo_url"
+    REPO_URL_DISPLAY="$repo_url"
+    REPO_SOURCE_LABEL="$source_label"
+
+    fallback_url="$(normalize_github_https_url "$repo_url")"
+    if [ "$fallback_url" != "$repo_url" ]; then
+        REPO_URL_FALLBACK="$fallback_url"
+    else
+        REPO_URL_FALLBACK=""
+    fi
+}
+
+detect_installer_repo_root() {
+    local source_path="${BASH_SOURCE[0]:-$0}"
+    local script_dir
+    local candidate
+
+    if [ -z "$source_path" ] || [ ! -f "$source_path" ]; then
+        return 1
+    fi
+
+    case "$source_path" in
+        /*) ;;
+        *) source_path="$PWD/$source_path" ;;
+    esac
+
+    script_dir="$(cd "$(dirname "$source_path")" && pwd -P)" || return 1
+    candidate="$(cd "$script_dir/.." && pwd -P)" || return 1
+
+    if [ -d "$candidate/.git" ] && [ -f "$candidate/pyproject.toml" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+
+    return 1
+}
+
+configure_repo_source() {
+    local local_root=""
+    local current_branch=""
+    local upstream_ref=""
+    local remote_name=""
+    local remote_url=""
+
+    if [ "$REPO_URL_EXPLICIT" = true ]; then
+        set_repo_source "$REPO_URL_OVERRIDE" "explicit --repo"
+        log_info "Installer source: $REPO_SOURCE_LABEL"
+        log_info "Repository: $REPO_URL_DISPLAY"
+        log_info "Branch: $BRANCH"
+        return 0
+    fi
+
+    local_root="$(detect_installer_repo_root 2>/dev/null || true)"
+    if [ -n "$local_root" ] && git -C "$local_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        current_branch="$(git -C "$local_root" branch --show-current 2>/dev/null || true)"
+        upstream_ref="$(git -C "$local_root" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+
+        if [ -n "$upstream_ref" ] && [ "$upstream_ref" != "${upstream_ref#*/}" ]; then
+            remote_name="${upstream_ref%%/*}"
+            if [ "$BRANCH_EXPLICIT" = false ]; then
+                BRANCH="${upstream_ref#*/}"
+            fi
+        elif [ -n "$current_branch" ]; then
+            remote_name="$(git -C "$local_root" config --get "branch.${current_branch}.remote" 2>/dev/null || true)"
+            if [ "$BRANCH_EXPLICIT" = false ]; then
+                BRANCH="$current_branch"
+            fi
+        fi
+
+        if [ -z "$remote_name" ] && git -C "$local_root" remote get-url fork >/dev/null 2>&1; then
+            remote_name="fork"
+        fi
+        if [ -z "$remote_name" ] && git -C "$local_root" remote get-url origin >/dev/null 2>&1; then
+            remote_name="origin"
+        fi
+
+        if [ -n "$remote_name" ]; then
+            remote_url="$(git -C "$local_root" remote get-url "$remote_name" 2>/dev/null || true)"
+        fi
+
+        if [ -n "$remote_url" ]; then
+            set_repo_source "$remote_url" "local checkout ($local_root)"
+            log_info "Installer source: $REPO_SOURCE_LABEL"
+            log_info "Repository: $REPO_URL_DISPLAY"
+            log_info "Branch: $BRANCH"
+            return 0
+        fi
+
+        # Last resort for an unpushed local checkout without a remote. This is
+        # intentionally local-only and only applies when scripts/install.sh is
+        # executed from inside that checkout; curl/raw installs still use Nous.
+        set_repo_source "$local_root" "local checkout path"
+        log_info "Installer source: $REPO_SOURCE_LABEL"
+        log_info "Repository: $REPO_URL_DISPLAY"
+        log_info "Branch: $BRANCH"
+        return 0
+    fi
+
+    set_repo_source "$DEFAULT_REPO_URL_SSH" "upstream default"
+    REPO_URL_FALLBACK="$DEFAULT_REPO_URL_HTTPS"
+    REPO_URL_DISPLAY="$DEFAULT_REPO_URL_HTTPS"
+    log_info "Installer source: $REPO_SOURCE_LABEL"
+    log_info "Repository: $REPO_URL_DISPLAY"
+    log_info "Branch: $BRANCH"
 }
 
 is_termux() {
@@ -849,8 +997,58 @@ show_manual_install_hint() {
 # Installation
 # ============================================================================
 
+fetch_install_branch() {
+    local refspec="+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+
+    if git fetch origin "$refspec"; then
+        return 0
+    fi
+
+    if [ -n "$REPO_URL_FALLBACK" ] && [ "$REPO_URL_FALLBACK" != "$REPO_URL_PRIMARY" ]; then
+        log_warn "Fetch from $REPO_URL_PRIMARY failed, trying $REPO_URL_FALLBACK..."
+        git remote set-url origin "$REPO_URL_FALLBACK"
+        if git fetch origin "$refspec"; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+checkout_install_branch() {
+    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+        git checkout "$BRANCH"
+        git pull --ff-only origin "$BRANCH"
+    else
+        git checkout -b "$BRANCH" "origin/$BRANCH"
+    fi
+}
+
+clone_from_source() {
+    log_info "Cloning from $REPO_URL_PRIMARY..."
+    if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+       git clone --branch "$BRANCH" "$REPO_URL_PRIMARY" "$INSTALL_DIR"; then
+        log_success "Cloned repository"
+        return 0
+    fi
+
+    rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial clone
+
+    if [ -n "$REPO_URL_FALLBACK" ] && [ "$REPO_URL_FALLBACK" != "$REPO_URL_PRIMARY" ]; then
+        log_warn "Clone from $REPO_URL_PRIMARY failed, trying $REPO_URL_FALLBACK..."
+        if git clone --branch "$BRANCH" "$REPO_URL_FALLBACK" "$INSTALL_DIR"; then
+            log_success "Cloned repository"
+            return 0
+        fi
+    fi
+
+    log_error "Failed to clone repository branch '$BRANCH' from $REPO_URL_DISPLAY"
+    exit 1
+}
+
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
+    log_info "Using repository: $REPO_URL_DISPLAY (branch: $BRANCH)"
 
     if [ -d "$INSTALL_DIR" ]; then
         if [ -d "$INSTALL_DIR/.git" ]; then
@@ -866,9 +1064,17 @@ clone_repo() {
                 autostash_ref="$(git rev-parse --verify refs/stash)"
             fi
 
-            git fetch origin
-            git checkout "$BRANCH"
-            git pull --ff-only origin "$BRANCH"
+            if git remote get-url origin >/dev/null 2>&1; then
+                git remote set-url origin "$REPO_URL_PRIMARY"
+            else
+                git remote add origin "$REPO_URL_PRIMARY"
+            fi
+
+            if ! fetch_install_branch; then
+                log_error "Failed to fetch branch '$BRANCH' from $REPO_URL_DISPLAY"
+                exit 1
+            fi
+            checkout_install_branch
 
             if [ -n "$autostash_ref" ]; then
                 local restore_now="yes"
@@ -907,23 +1113,7 @@ clone_repo() {
             exit 1
         fi
     else
-        # Try SSH first (for private repo access), fall back to HTTPS
-        # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
-        # so SSH fails fast instead of hanging when no key is configured.
-        log_info "Trying SSH clone..."
-        if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
-            log_success "Cloned via SSH"
-        else
-            rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
-            log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
-                log_success "Cloned via HTTPS"
-            else
-                log_error "Failed to clone repository"
-                exit 1
-            fi
-        fi
+        clone_from_source
     fi
 
     cd "$INSTALL_DIR"
@@ -1732,6 +1922,7 @@ main() {
     install_uv
     check_python
     check_git
+    configure_repo_source
     check_node
     check_network_prerequisites
     install_system_packages
